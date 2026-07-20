@@ -1,0 +1,9 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: demo-order-service
+
+notification:
+  platform-url: http://localhost:8080

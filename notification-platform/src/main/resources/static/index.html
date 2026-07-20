@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reliable Event Notification Platform</title>
+  <style>
+    :root { color-scheme: light; font-family: Inter, "Microsoft YaHei", Arial, sans-serif; }
+    body { margin: 0; background: #f6f7f9; color: #1f2937; }
+    header { background: #18212f; color: white; padding: 18px 28px; }
+    h1 { margin: 0; font-size: 22px; font-weight: 700; }
+    main { padding: 22px 28px; max-width: 1280px; margin: 0 auto; }
+    .stats { display: grid; grid-template-columns: repeat(6, minmax(120px, 1fr)); gap: 12px; margin-bottom: 18px; }
+    .stat, section { background: white; border: 1px solid #e5e7eb; border-radius: 8px; }
+    .stat { padding: 14px; }
+    .label { color: #6b7280; font-size: 12px; }
+    .value { font-size: 26px; font-weight: 800; margin-top: 4px; }
+    section { padding: 16px; margin-bottom: 18px; }
+    h2 { margin: 0 0 12px; font-size: 16px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { border-bottom: 1px solid #edf0f3; padding: 9px 8px; text-align: left; vertical-align: top; }
+    th { color: #4b5563; background: #fafafa; }
+    input, textarea { width: 100%; box-sizing: border-box; padding: 9px; border: 1px solid #d1d5db; border-radius: 6px; font: inherit; }
+    button { border: 0; border-radius: 6px; background: #2563eb; color: white; padding: 8px 12px; cursor: pointer; }
+    button.secondary { background: #334155; }
+    .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; align-items: end; }
+    .mono { font-family: Consolas, monospace; max-width: 360px; word-break: break-all; }
+    .status-DEAD { color: #b91c1c; font-weight: 700; }
+    .status-SUCCEEDED { color: #047857; font-weight: 700; }
+    .status-RETRYING { color: #b45309; font-weight: 700; }
+    @media (max-width: 900px) { .stats, .grid { grid-template-columns: 1fr 1fr; } }
+  </style>
+</head>
+<body>
+<header><h1>Reliable Event Notification Platform</h1></header>
+<main>
+  <div class="stats" id="stats"></div>
+
+  <section>
+    <h2>提交测试事件</h2>
+    <div class="grid">
+      <label>事件类型<input id="eventType" value="order.paid"></label>
+      <label>订单号<input id="orderId" value="10001"></label>
+      <label>金额<input id="amount" value="99.9"></label>
+      <button onclick="submitEvent()">提交事件</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>死信治理</h2>
+    <button onclick="replayDeadLetters()">批量重放死信</button>
+  </section>
+
+  <section>
+    <h2>Webhook 接收端点</h2>
+    <table>
+      <thead><tr><th>ID</th><th>名称</th><th>URL</th><th>事件类型</th><th>最大尝试</th><th>限流/分钟</th><th>启用</th></tr></thead>
+      <tbody id="endpoints"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>最近投递任务</h2>
+    <table>
+      <thead><tr><th>ID</th><th>事件</th><th>端点</th><th>状态</th><th>次数</th><th>下次尝试</th><th>错误</th><th>操作</th></tr></thead>
+      <tbody id="deliveries"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>最近投递日志</h2>
+    <table>
+      <thead><tr><th>时间</th><th>Delivery</th><th>Attempt</th><th>结果</th><th>耗时</th><th>响应/错误</th></tr></thead>
+      <tbody id="attempts"></tbody>
+    </table>
+  </section>
+</main>
+<script>
+const json = r => r.json();
+const ADMIN_HEADERS = {'Content-Type': 'application/json', 'X-App-Id': 'platform-admin', 'X-Api-Key': 'admin-key'};
+
+async function refresh() {
+  const [stats, endpoints, deliveries, attempts] = await Promise.all([
+    fetch('/api/dashboard/stats').then(json),
+    fetch('/api/endpoints').then(json),
+    fetch('/api/deliveries').then(json),
+    fetch('/api/deliveries/attempts').then(json)
+  ]);
+  renderStats(stats);
+  document.querySelector('#endpoints').innerHTML = endpoints.map(e => `<tr>
+    <td>${e.id}</td><td>${e.name}</td><td class="mono">${e.url}</td><td>${e.eventTypes}</td>
+    <td>${e.maxAttempts}</td><td>${e.rateLimitPerMinute}</td><td>${e.active}</td></tr>`).join('');
+  document.querySelector('#deliveries').innerHTML = deliveries.map(d => `<tr>
+    <td>${d.id}</td><td>${d.event.type}<br><span class="mono">${d.event.eventId}</span></td><td>${d.endpoint.name}</td>
+    <td class="status-${d.status}">${d.status}</td><td>${d.attemptCount}</td><td>${d.nextAttemptAt}</td>
+    <td class="mono">${d.lastError || ''}</td><td><button class="secondary" onclick="retry(${d.id})">重放</button></td></tr>`).join('');
+  document.querySelector('#attempts').innerHTML = attempts.map(a => `<tr>
+    <td>${a.createdAt}</td><td>${a.delivery.id}</td><td>${a.attemptNo}</td><td>${a.success ? 'SUCCESS' : 'FAILED'}</td>
+    <td>${a.durationMs}ms</td><td class="mono">${a.responseBody || a.errorMessage || ''}</td></tr>`).join('');
+}
+
+function renderStats(s) {
+  const items = [['端点', s.endpoints], ['事件', s.events], ['待投递', s.pending], ['重试中', s.retrying], ['成功', s.succeeded], ['死信', s.dead]];
+  document.querySelector('#stats').innerHTML = items.map(i => `<div class="stat"><div class="label">${i[0]}</div><div class="value">${i[1]}</div></div>`).join('');
+}
+
+async function submitEvent() {
+  await fetch('/api/events', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-App-Id': 'demo-order-service', 'X-Api-Key': 'order-key'},
+    body: JSON.stringify({
+      type: document.querySelector('#eventType').value,
+      data: { orderId: document.querySelector('#orderId').value, amount: Number(document.querySelector('#amount').value) }
+    })
+  });
+  setTimeout(refresh, 500);
+}
+
+async function retry(id) {
+  await fetch(`/api/deliveries/${id}/retry`, { method: 'POST', headers: ADMIN_HEADERS });
+  setTimeout(refresh, 500);
+}
+
+async function replayDeadLetters() {
+  await fetch('/api/deliveries/dead-letter/replay', { method: 'POST', headers: ADMIN_HEADERS });
+  setTimeout(refresh, 500);
+}
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

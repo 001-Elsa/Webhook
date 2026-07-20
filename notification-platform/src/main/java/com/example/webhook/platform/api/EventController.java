@@ -1,0 +1,32 @@
+package com.example.webhook.platform.api;
+
+import com.example.webhook.platform.api.dto.EventSubmitResponse;
+import com.example.webhook.platform.api.dto.SubmitEventRequest;
+import com.example.webhook.platform.domain.EventRecord;
+import com.example.webhook.platform.repo.EventRecordRepository;
+import com.example.webhook.platform.service.EventService;
+import jakarta.validation.Valid;
+import org.springframework.web.bind.annotation.*;
+import java.util.List;
+
+@RestController
+@RequestMapping("/api/events")
+public class EventController {
+    private final EventService eventService;
+    private final EventRecordRepository eventRepository;
+
+    public EventController(EventService eventService, EventRecordRepository eventRepository) {
+        this.eventService = eventService;
+        this.eventRepository = eventRepository;
+    }
+
+    @PostMapping
+    public EventSubmitResponse submit(@Valid @RequestBody SubmitEventRequest request) {
+        return eventService.submit(request);
+    }
+
+    @GetMapping
+    public List<EventRecord> list() {
+        return eventRepository.findAll();
+    }
+}

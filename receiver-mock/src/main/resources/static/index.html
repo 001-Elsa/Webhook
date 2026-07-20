@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Receiver Mock</title>
+  <style>
+    body { margin: 0; font-family: Inter, "Microsoft YaHei", Arial, sans-serif; background: #f8fafc; color: #1f2937; }
+    header { background: #111827; color: white; padding: 18px 28px; }
+    main { padding: 22px 28px; max-width: 1100px; margin: 0 auto; }
+    section { background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+    h1 { margin: 0; font-size: 22px; }
+    input { padding: 8px; border: 1px solid #d1d5db; border-radius: 6px; width: 80px; }
+    button { border: 0; border-radius: 6px; background: #2563eb; color: white; padding: 8px 12px; cursor: pointer; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { border-bottom: 1px solid #edf0f3; padding: 9px; text-align: left; vertical-align: top; }
+    .mono { font-family: Consolas, monospace; word-break: break-all; }
+  </style>
+</head>
+<body>
+<header><h1>Receiver Mock</h1></header>
+<main>
+  <section>
+    <label>接下来失败次数 <input id="failNext" value="1"></label>
+    <button onclick="saveConfig()">保存</button>
+  </section>
+  <section>
+    <table>
+      <thead><tr><th>时间</th><th>商家</th><th>事件</th><th>Delivery</th><th>签名</th><th>Payload</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </section>
+</main>
+<script>
+const json = r => r.json();
+async function refresh() {
+  const [config, rows] = await Promise.all([fetch('/api/config').then(json), fetch('/api/received').then(json)]);
+  document.querySelector('#failNext').value = config.failNext;
+  document.querySelector('#rows').innerHTML = rows.map(r => `<tr><td>${r.receivedAt}</td><td>${r.merchant}</td>
+    <td>${r.eventType}<br><span class="mono">${r.eventId}</span></td><td>${r.deliveryId}</td><td>${r.signatureValid}</td><td class="mono">${r.payload}</td></tr>`).join('');
+}
+async function saveConfig() {
+  await fetch('/api/config', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({failNext: Number(document.querySelector('#failNext').value)}) });
+  refresh();
+}
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>
