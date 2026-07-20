@@ -41,6 +41,7 @@ public interface DeliveryTaskRepository extends JpaRepository<DeliveryTask, Long
                set d.lockedBy = :owner, d.lockedUntil = :lockedUntil
              where d.id = :id
                and d.status in :statuses
+               and d.nextAttemptAt <= :now
                and (d.lockedUntil is null or d.lockedUntil < :now)
             """)
     int claimDueTask(@Param("id") Long id,

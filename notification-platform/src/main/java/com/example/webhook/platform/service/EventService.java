@@ -14,6 +14,8 @@ import com.example.webhook.platform.security.RequestContext;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -69,11 +71,16 @@ public class EventService {
             task.setEndpoint(endpoint);
             task.setNextAttemptAt(Instant.now());
             deliveryRepository.save(task);
-            deliveryQueue.enqueue(task.getId());
+            enqueueAfterCommit(task.getId());
         }
         return new EventSubmitResponse(eventId, endpoints.size(), false);
     }
 
+    private void enqueueAfterCommit(Long deliveryId) {
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override public void afterCommit() { deliveryQueue.enqueue(deliveryId); }
+        });
+    }
     private String writePayload(Object data) {
         try {
             return objectMapper.writeValueAsString(data == null ? java.util.Map.of() : data);
