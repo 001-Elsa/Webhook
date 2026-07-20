@@ -4,7 +4,7 @@ import jakarta.persistence.*;
 import java.time.Instant;
 
 @Entity
-@Table(name = "delivery_attempts")
+@Table(name = "delivery_attempts", indexes = @Index(name = "idx_attempt_delivery_created", columnList = "delivery_id,createdAt"))
 public class DeliveryAttempt {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

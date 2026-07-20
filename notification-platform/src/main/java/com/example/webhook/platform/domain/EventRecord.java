@@ -4,7 +4,8 @@ import jakarta.persistence.*;
 import java.time.Instant;
 
 @Entity
-@Table(name = "event_records", uniqueConstraints = @UniqueConstraint(columnNames = "eventId"))
+@Table(name = "event_records", uniqueConstraints = @UniqueConstraint(name = "uk_event_tenant_id", columnNames = {"tenantId", "eventId"}),
+        indexes = @Index(name = "idx_event_created", columnList = "createdAt"))
 public class EventRecord {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -20,7 +21,7 @@ public class EventRecord {
     @Column(length = 80)
     private String traceId;
     @Lob
-    @Column(nullable = false)
+    @Column(nullable = false, columnDefinition = "LONGTEXT")
     private String payload;
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 30)

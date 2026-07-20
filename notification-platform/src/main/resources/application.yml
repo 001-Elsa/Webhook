@@ -9,17 +9,12 @@ spring:
   application:
     name: notification-platform
   datasource:
-    url: jdbc:h2:file:./data/notification-platform;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE
-    driver-class-name: org.h2.Driver
-    username: sa
-    password:
-  h2:
-    console:
-      enabled: true
-      path: /h2-console
+    url: ${MYSQL_URL:jdbc:mysql://localhost:3306/event_relay?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
+    username: ${MYSQL_USER:eventrelay}
+    password: ${MYSQL_PASSWORD:eventrelay}
   jpa:
     hibernate:
-      ddl-auto: update
+      ddl-auto: validate
     open-in-view: false
     properties:
       hibernate:

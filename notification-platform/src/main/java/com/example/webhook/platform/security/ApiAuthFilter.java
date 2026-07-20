@@ -17,7 +17,7 @@ import java.util.Set;
 
 @Component
 public class ApiAuthFilter extends OncePerRequestFilter {
-    private static final Set<String> PUBLIC_PREFIXES = Set.of("/actuator", "/h2-console", "/v3/api-docs", "/swagger-ui");
+    private static final Set<String> PUBLIC_PREFIXES = Set.of("/actuator", "/v3/api-docs", "/swagger-ui");
     private final ApplicationClientRepository clientRepository;
 
     public ApiAuthFilter(ApplicationClientRepository clientRepository) {
