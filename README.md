@@ -1,142 +1,95 @@
-# Reliable Event Notification Platform
+# EventRelay：可靠事件投递与通知平台
 
-这是一个面向 Java 后端岗位展示的可靠事件通知平台。核心项目不是商城，而是一个独立运行的通用 Webhook 投递系统：业务系统提交事件，平台负责保存、异步投递、失败重试、签名、防重、死信和人工重放。
+EventRelay 是一个面向外部系统集成场景的可靠事件投递基础设施。业务系统提交事件后，平台负责持久化、异步投递、签名、限流、失败重试、死信治理和可观测性。
+
+## 已真实落地的技术栈
+
+- Java 17、Spring Boot 3、Spring Data JPA、Flyway
+- MySQL 8.4：事件、端点、投递任务和投递审计日志的事实来源
+- RabbitMQ 4：实时异步消费、手动 ACK、TTL + DLX 延迟重试和死信队列
+- Redis 7：Lua 原子分布式限流、24 小时幂等键缓存
+- Prometheus + Grafana：成功数、失败数、投递耗时和 JVM 指标
+- Docker Compose：8 个服务一键启动
+- JUnit 5 + Testcontainers：使用真实 MySQL、RabbitMQ、Redis 的集成测试
+- GitHub Actions：自动编译、测试和校验 Compose
+
+## 可靠性设计
+
+1. API 在同一 MySQL 事务内写入事件和投递任务。
+2. 事务提交后发布 RabbitMQ 消息，避免消费者读取到未提交任务。
+3. 消费者先用条件更新抢占任务，多实例或重复消息只有一个实例能够执行。
+4. HTTP 成功后记录审计日志并更新任务；消息采用手动 ACK。
+5. 失败任务按 5 秒、30 秒、120 秒进入 TTL 重试队列，再由 DLX 路由回主队列。
+6. 超过端点最大次数后同时保留 MySQL `DEAD` 状态并写入 RabbitMQ 死信队列，可人工重放。
+7. MySQL 是事实来源；定时补偿扫描会重新发布到期任务，覆盖“数据库已提交但 MQ 发布失败”和 MQ 重启场景。
+8. 投递语义是 at-least-once。平台以任务状态和乐观锁防止内部重复执行；模拟接收端以 `deliveryId` 演示消费幂等。
+
+事件幂等以 MySQL `(tenant_id, event_id)` 唯一索引为最终约束，Redis 仅作短期辅助，Redis 故障不会破坏正确性。限流使用 Lua 将 `INCR` 与过期设置合并为原子操作；Redis 不可用时暂时 fail-open 并记录警告，避免基础设施故障阻断全部投递。
+
+投递尝试日志默认保留 30 天，每天 03:30 清理；可通过 `DELIVERY_ATTEMPT_RETENTION_DAYS` 调整，清理数量暴露为 Prometheus 指标。
+
+## 一键启动
+
+只需要安装并启动 Docker Desktop，不需要在 Windows 单独安装 MySQL、Redis、RabbitMQ、Prometheus 或 Grafana。项目会自动拉取官方镜像：
+
+```powershell
+docker compose up -d --build
+docker compose ps
+```
+
+首次启动需要下载镜像和 Maven 依赖，耗时取决于网络。服务入口：
+
+| 服务 | 地址 | 凭据 |
+| --- | --- | --- |
+| EventRelay 控制台 | http://localhost:8080 | - |
+| Swagger | http://localhost:8080/swagger-ui.html | - |
+| 订单演示 | http://localhost:8081 | - |
+| 接收端模拟器 | http://localhost:8082 | - |
+| RabbitMQ 管理台 | http://localhost:15672 | `eventrelay / eventrelay` |
+| Prometheus | http://localhost:9090 | - |
+| Grafana | http://localhost:3000 | `admin / admin` |
+
+停止服务：
+
+```powershell
+docker compose down
+```
+
+如需同时删除本项目的数据库和监控卷，明确执行 `docker compose down -v`。
+
+## API 示例
+
+```powershell
+$body = @{
+  eventId = "evt-10001"
+  type = "order.paid"
+  data = @{ orderId = "10001"; amount = 99.9 }
+} | ConvertTo-Json
+
+Invoke-RestMethod http://localhost:8080/api/events -Method Post `
+  -Headers @{ "X-App-Id"="demo-order-service"; "X-Api-Key"="order-key" } `
+  -ContentType application/json -Body $body
+```
+
+再次提交相同 `eventId` 会返回 `duplicate=true`，且不会产生第二组投递任务。
+
+## 测试与压测
+
+```powershell
+.\.tools\apache-maven-3.9.9\bin\mvn.cmd verify
+docker compose config -q
+```
+
+安装 k6 后可运行 `k6 run scripts/load-test.js`。脚本默认以 200 次/秒持续写入 60 秒。仓库不预填虚构 TPS；请将机器配置、Git 提交、参数、成功率、p95 延迟和最终任务状态写入实测报告后再用于简历。
+
+建议验证的故障场景：重复事件、接收端连续失败、平台重启、多平台实例竞争、RabbitMQ 重启、Redis 断开、死信批量重放。
 
 ## 模块
 
 | 模块 | 端口 | 作用 |
 | --- | --- | --- |
-| `notification-platform` | `8080` | 核心可靠事件通知平台 |
-| `demo-order-service` | `8081` | 迷你订单服务，只负责产生订单事件 |
-| `receiver-mock` | `8082` | 模拟商家接收服务，可配置失败次数 |
+| `notification-platform` | 8080 | 事件接收、可靠调度、管理 API 和指标 |
+| `demo-order-service` | 8081 | 产生订单领域事件 |
+| `receiver-mock` | 8082 | 校验 HMAC 签名、模拟失败和幂等消费 |
 
-## 第一阶段能力
-
-- Webhook 端点管理：`POST /api/endpoints`
-- 事件接收与幂等：`POST /api/events`
-- 异步投递任务：事件和投递任务分表保存
-- 自动重试：指数退避，超过最大次数进入死信
-- 请求签名：`HMAC-SHA256`，通过 `X-Webhook-Signature` 传递
-- 投递日志：每次尝试保存响应、错误和耗时
-- 人工重放：`POST /api/deliveries/{id}/retry`
-- 简单限流：按端点进行每分钟内存限流
-- 监控：Spring Boot Actuator 暴露 `health/info/metrics`
-- 管理页面：平台首页可查看统计、任务、日志和手动重放
-
-## 已升级能力
-
-- MQ 扩展点：`DeliveryQueue` 接口隔离投递队列，当前实现为数据库队列，后续可替换 RabbitMQ/Kafka/Redis Stream。
-- 分布式任务抢占：`DeliveryTask` 增加 `lockedBy/lockedUntil/version`，调度前先抢占任务，降低多实例重复投递风险。
-- 租户与应用身份：`ApplicationClient` 保存 `tenantId/appId/apiKey/role`，事件和端点都绑定租户。
-- API 鉴权与 RBAC：写接口要求 `X-App-Id` 和 `X-Api-Key`，区分 `ADMIN/PRODUCER/VIEWER`。
-- 分布式限流预留：`RateLimiter` 接口隔离限流实现，当前为内存限流，并提供 Redis Lua 方案说明。
-- Prometheus 指标：暴露 `/actuator/prometheus`，记录投递成功数、失败数和耗时。
-- 链路追踪：支持 `X-Trace-Id`，事件、投递请求和日志 MDC 都携带 traceId。
-- 死信治理：支持死信列表 `GET /api/deliveries/dead-letter` 和批量重放 `POST /api/deliveries/dead-letter/replay`。
-- OpenAPI 文档：访问 `http://localhost:8080/swagger-ui.html` 查看接口文档。
-- SDK 示例：`notification-platform/src/main/resources/static/sdk-example.js` 提供 JS 调用示例。
-
-## 快速演示
-
-1. 启动三个服务。
-2. 打开模拟接收服务 `http://localhost:8082`，确认“接下来失败次数”为 `1`。
-3. 打开订单服务 `http://localhost:8081`，创建订单并点击“支付”。
-4. 打开平台 `http://localhost:8080`，观察投递任务第一次失败，随后自动重试并成功。
-
-平台启动时会自动创建一个演示端点：
-
-```text
-http://localhost:8082/webhook/demo-merchant
-secret: demo-secret
-eventTypes: order.created,order.paid,order.cancelled,order.shipped
-```
-
-## API 示例
-
-提交事件：
-
-```http
-POST http://localhost:8080/api/events
-Content-Type: application/json
-X-App-Id: demo-order-service
-X-Api-Key: order-key
-X-Trace-Id: order-10001
-
-{
-  "type": "order.paid",
-  "data": {
-    "orderId": "10001",
-    "amount": 99.9
-  }
-}
-```
-
-创建端点：
-
-```http
-POST http://localhost:8080/api/endpoints
-Content-Type: application/json
-X-App-Id: platform-admin
-X-Api-Key: admin-key
-
-{
-  "name": "merchant-a",
-  "url": "http://localhost:8082/webhook/merchant-a",
-  "secret": "demo-secret",
-  "eventTypes": "order.paid,order.shipped",
-  "maxAttempts": 5,
-  "rateLimitPerMinute": 60,
-  "active": true
-}
-```
-
-人工重放：
-
-```http
-POST http://localhost:8080/api/deliveries/1/retry
-X-App-Id: platform-admin
-X-Api-Key: admin-key
-```
-
-批量重放死信：
-
-```http
-POST http://localhost:8080/api/deliveries/dead-letter/replay
-X-App-Id: platform-admin
-X-Api-Key: admin-key
-```
-
-## 设计边界
-
-当前版本是单体多模块，平台内部已经按可拆分边界建模：
-
-- `EventRecord`：平台收到的业务事件
-- `WebhookEndpoint`：订阅端点和投递配置
-- `DeliveryTask`：可调度、可重试、可死信的投递任务
-- `DeliveryAttempt`：每次 HTTP 投递的审计日志
-- `ApplicationClient`：调用平台的业务应用身份和角色
-
-关键扩展接口：
-
-- `DeliveryQueue`：替换为 RabbitMQ/Kafka 时的队列端口
-- `RateLimiter`：替换为 Redis 分布式限流时的限流端口
-
-以后要扩展时，不需要重写项目：
-
-- H2 替换为 MySQL/PostgreSQL
-- Redis Lua 限流：已有 `RateLimiter` 端口，接 Redis 后替换实现
-- RabbitMQ/Kafka 延迟队列：已有 `DeliveryQueue` 端口，接 MQ 后替换数据库队列实现
-- 分片调度或 ShedLock：当前已有任务抢占字段，可继续强化为数据库锁或分片锁
-- Prometheus/Grafana 面板：当前已暴露 Prometheus 指标
-- 失败原因聚合、端点健康评分：可基于 `DeliveryAttempt` 继续统计
-- 多语言 SDK：当前已有 JS SDK 示例，可继续补 Java/Go SDK
-
-## 面试表达
-
-推荐说法：
-
-> 我实现了一个通用的可靠事件投递平台，业务系统可以通过 API 提交事件，平台会把事件异步投递到多个订阅端点，并支持签名、幂等、失败重试、死信、人工重放、投递日志和基础限流。我另外做了一个很小的订单系统和模拟接收端，用来验证真实业务链路和异常场景。
-
-不推荐说法：
-
-> 我做了一个商城，然后加了 Webhook。
+演示凭据为 `platform-admin/admin-key` 和 `demo-order-service/order-key`，仅用于本地。生产环境必须改成密文存储、轮换机制和正式认证系统。

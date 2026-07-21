@@ -1,0 +1,116 @@
+name: eventrelay
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: event_relay
+      MYSQL_USER: eventrelay
+      MYSQL_PASSWORD: eventrelay
+      MYSQL_ROOT_PASSWORD: root-secret
+    ports: ["3306:3306"]
+    volumes: ["mysql-data:/var/lib/mysql"]
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["6379:6379"]
+    volumes: ["redis-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:4.1-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: eventrelay
+      RABBITMQ_DEFAULT_PASS: eventrelay
+    ports: ["5672:5672", "15672:15672"]
+    volumes: ["rabbitmq-data:/var/lib/rabbitmq"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  receiver-mock:
+    build:
+      context: .
+      args: { MODULE: receiver-mock }
+    ports: ["8082:8082"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8082/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+
+  notification-platform:
+    build:
+      context: .
+      args: { MODULE: notification-platform }
+    environment:
+      MYSQL_URL: jdbc:mysql://mysql:3306/event_relay?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
+      MYSQL_USER: eventrelay
+      MYSQL_PASSWORD: eventrelay
+      REDIS_HOST: redis
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: eventrelay
+      RABBITMQ_PASSWORD: eventrelay
+      WEBHOOK_DEMO_RECEIVER_URL: http://receiver-mock:8082/webhook/demo-merchant
+    ports: ["8080:8080"]
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      receiver-mock: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  demo-order-service:
+    build:
+      context: .
+      args: { MODULE: demo-order-service }
+    environment:
+      NOTIFICATION_PLATFORM_URL: http://notification-platform:8080
+    ports: ["8081:8081"]
+    depends_on:
+      notification-platform: { condition: service_healthy }
+
+  prometheus:
+    image: prom/prometheus:v3.4.2
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus"]
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports: ["9090:9090"]
+    depends_on:
+      notification-platform: { condition: service_healthy }
+
+  grafana:
+    image: grafana/grafana:12.0.2
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports: ["3000:3000"]
+    depends_on: [prometheus]
+
+volumes:
+  mysql-data:
+  redis-data:
+  rabbitmq-data:
+  prometheus-data:
+  grafana-data:

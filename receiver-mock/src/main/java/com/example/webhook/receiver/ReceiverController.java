@@ -13,11 +13,14 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 @RestController
 public class ReceiverController {
     private final List<ReceivedWebhook> received = new ArrayList<>();
     private final AtomicInteger failNext = new AtomicInteger(1);
+    private final Set<String> processedDeliveries = ConcurrentHashMap.newKeySet();
     private volatile String secret = "demo-secret";
 
     @PostMapping("/webhook/{merchant}")
@@ -32,7 +35,11 @@ public class ReceiverController {
         if (!valid) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid webhook signature");
         }
+        if (!processedDeliveries.add(deliveryId)) {
+            return Map.of("received", true, "duplicate", true, "eventId", eventId, "deliveryId", deliveryId);
+        }
         if (failNext.getAndUpdate(value -> Math.max(0, value - 1)) > 0) {
+            processedDeliveries.remove(deliveryId);
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Configured demo failure");
         }
         synchronized (received) {

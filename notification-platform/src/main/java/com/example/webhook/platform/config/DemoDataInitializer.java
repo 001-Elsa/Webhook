@@ -8,11 +8,13 @@ import com.example.webhook.platform.repo.WebhookEndpointRepository;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.beans.factory.annotation.Value;
 
 @Configuration
 public class DemoDataInitializer {
     @Bean
-    CommandLineRunner seedDemoEndpoint(WebhookEndpointRepository repository) {
+    CommandLineRunner seedDemoEndpoint(WebhookEndpointRepository repository,
+            @Value("${webhook.demo-receiver-url:http://localhost:8082/webhook/demo-merchant}") String receiverUrl) {
         return args -> {
             repository.findAll().stream()
                     .filter(endpoint -> endpoint.getTenantId() == null || endpoint.getTenantId().isBlank())
@@ -25,7 +27,7 @@ public class DemoDataInitializer {
             }
             WebhookEndpoint endpoint = new WebhookEndpoint();
             endpoint.setName("Demo merchant receiver");
-            endpoint.setUrl("http://localhost:8082/webhook/demo-merchant");
+            endpoint.setUrl(receiverUrl);
             endpoint.setSecret("demo-secret");
             endpoint.setEventTypes("order.created,order.paid,order.cancelled,order.shipped");
             endpoint.setMaxAttempts(5);

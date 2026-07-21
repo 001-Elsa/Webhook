@@ -53,3 +53,6 @@ webhook:
     fixed-delay-ms: 5000
   queue:
     recovery-batch-size: 100
+  retention:
+    delivery-attempt-days: ${DELIVERY_ATTEMPT_RETENTION_DAYS:30}
+    cleanup-cron: "0 30 3 * * *"
