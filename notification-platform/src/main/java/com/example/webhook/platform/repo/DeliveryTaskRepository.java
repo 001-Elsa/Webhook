@@ -30,7 +30,7 @@ public interface DeliveryTaskRepository extends JpaRepository<DeliveryTask, Long
 
     long countByStatus(DeliveryStatus status);
 
-    long countByEventEventId(String eventId);
+    long countByEventTenantIdAndEventEventId(String tenantId, String eventId);
 
     @Query("select count(d) from DeliveryTask d where d.status in :statuses")
     long countActive(Collection<DeliveryStatus> statuses);

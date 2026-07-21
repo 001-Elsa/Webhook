@@ -4,6 +4,7 @@ import com.example.webhook.platform.api.dto.CreateEndpointRequest;
 import com.example.webhook.platform.domain.WebhookEndpoint;
 import com.example.webhook.platform.repo.WebhookEndpointRepository;
 import com.example.webhook.platform.security.RequestContext;
+import com.example.webhook.platform.service.WebhookUrlValidator;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
 import java.util.List;
@@ -12,18 +13,21 @@ import java.util.List;
 @RequestMapping("/api/endpoints")
 public class EndpointController {
     private final WebhookEndpointRepository repository;
+    private final WebhookUrlValidator urlValidator;
 
-    public EndpointController(WebhookEndpointRepository repository) {
+    public EndpointController(WebhookEndpointRepository repository, WebhookUrlValidator urlValidator) {
         this.repository = repository;
+        this.urlValidator = urlValidator;
     }
 
     @GetMapping
     public List<WebhookEndpoint> list() {
-        return repository.findAll();
+        return repository.findByTenantId(RequestContext.principal().tenantId());
     }
 
     @PostMapping
     public WebhookEndpoint create(@Valid @RequestBody CreateEndpointRequest request) {
+        urlValidator.validate(request.url());
         WebhookEndpoint endpoint = new WebhookEndpoint();
         endpoint.setTenantId(RequestContext.principal().tenantId());
         endpoint.setName(request.name());
@@ -38,7 +42,8 @@ public class EndpointController {
 
     @PutMapping("/{id}")
     public WebhookEndpoint update(@PathVariable Long id, @Valid @RequestBody CreateEndpointRequest request) {
-        WebhookEndpoint endpoint = repository.findById(id)
+        urlValidator.validate(request.url());
+        WebhookEndpoint endpoint = repository.findByIdAndTenantId(id, RequestContext.principal().tenantId())
                 .orElseThrow(() -> new IllegalArgumentException("Endpoint not found: " + id));
         endpoint.setTenantId(RequestContext.principal().tenantId());
         endpoint.setName(request.name());

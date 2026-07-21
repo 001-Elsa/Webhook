@@ -51,6 +51,9 @@ springdoc:
 webhook:
   dispatcher:
     fixed-delay-ms: 5000
+  http:
+    connect-timeout-ms: ${WEBHOOK_CONNECT_TIMEOUT_MS:2000}
+    read-timeout-ms: ${WEBHOOK_READ_TIMEOUT_MS:5000}
   queue:
     recovery-batch-size: 100
   retention:

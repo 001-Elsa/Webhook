@@ -51,13 +51,13 @@ public class EventService {
         if (idempotencyStore.isKnownDuplicate(principal.tenantId(), eventId)) {
             var cachedDuplicate = eventRepository.findByTenantIdAndEventId(principal.tenantId(), eventId);
             if (cachedDuplicate.isPresent()) {
-                long count = deliveryRepository.countByEventEventId(eventId);
+                long count = deliveryRepository.countByEventTenantIdAndEventEventId(principal.tenantId(), eventId);
                 return new EventSubmitResponse(eventId, count, true);
             }
         }
         var duplicate = eventRepository.findByTenantIdAndEventId(principal.tenantId(), eventId);
         if (duplicate.isPresent()) {
-            long count = deliveryRepository.countByEventEventId(eventId);
+            long count = deliveryRepository.countByEventTenantIdAndEventEventId(principal.tenantId(), eventId);
             rememberAfterCommit(principal.tenantId(), eventId);
             return new EventSubmitResponse(eventId, count, true);
         }
@@ -88,12 +88,20 @@ public class EventService {
     }
 
     private void rememberAfterCommit(String tenantId, String eventId) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            idempotencyStore.remember(tenantId, eventId);
+            return;
+        }
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override public void afterCommit() { idempotencyStore.remember(tenantId, eventId); }
         });
     }
 
     private void enqueueAfterCommit(Long deliveryId) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            deliveryQueue.enqueue(deliveryId);
+            return;
+        }
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override public void afterCommit() { deliveryQueue.enqueue(deliveryId); }
         });

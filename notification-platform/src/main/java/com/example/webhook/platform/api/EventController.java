@@ -4,6 +4,7 @@ import com.example.webhook.platform.api.dto.EventSubmitResponse;
 import com.example.webhook.platform.api.dto.SubmitEventRequest;
 import com.example.webhook.platform.domain.EventRecord;
 import com.example.webhook.platform.repo.EventRecordRepository;
+import com.example.webhook.platform.security.RequestContext;
 import com.example.webhook.platform.service.EventService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
@@ -27,6 +28,6 @@ public class EventController {
 
     @GetMapping
     public List<EventRecord> list() {
-        return eventRepository.findAll();
+        return eventRepository.findByTenantIdOrderByCreatedAtDesc(RequestContext.principal().tenantId());
     }
 }
