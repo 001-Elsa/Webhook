@@ -28,16 +28,18 @@ public class EventService {
     private final DeliveryTaskRepository deliveryRepository;
     private final EndpointMatcher matcher;
     private final DeliveryQueue deliveryQueue;
+    private final EventIdempotencyStore idempotencyStore;
 
     public EventService(ObjectMapper objectMapper, EventRecordRepository eventRepository,
                         WebhookEndpointRepository endpointRepository, DeliveryTaskRepository deliveryRepository,
-                        EndpointMatcher matcher, DeliveryQueue deliveryQueue) {
+                        EndpointMatcher matcher, DeliveryQueue deliveryQueue, EventIdempotencyStore idempotencyStore) {
         this.objectMapper = objectMapper;
         this.eventRepository = eventRepository;
         this.endpointRepository = endpointRepository;
         this.deliveryRepository = deliveryRepository;
         this.matcher = matcher;
         this.deliveryQueue = deliveryQueue;
+        this.idempotencyStore = idempotencyStore;
     }
 
     @Transactional
@@ -46,9 +48,17 @@ public class EventService {
                 ? UUID.randomUUID().toString()
                 : request.eventId();
         var principal = RequestContext.principal();
+        if (idempotencyStore.isKnownDuplicate(principal.tenantId(), eventId)) {
+            var cachedDuplicate = eventRepository.findByTenantIdAndEventId(principal.tenantId(), eventId);
+            if (cachedDuplicate.isPresent()) {
+                long count = deliveryRepository.countByEventEventId(eventId);
+                return new EventSubmitResponse(eventId, count, true);
+            }
+        }
         var duplicate = eventRepository.findByTenantIdAndEventId(principal.tenantId(), eventId);
         if (duplicate.isPresent()) {
             long count = deliveryRepository.countByEventEventId(eventId);
+            rememberAfterCommit(principal.tenantId(), eventId);
             return new EventSubmitResponse(eventId, count, true);
         }
 
@@ -73,7 +83,14 @@ public class EventService {
             deliveryRepository.save(task);
             enqueueAfterCommit(task.getId());
         }
+        rememberAfterCommit(principal.tenantId(), eventId);
         return new EventSubmitResponse(eventId, endpoints.size(), false);
+    }
+
+    private void rememberAfterCommit(String tenantId, String eventId) {
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override public void afterCommit() { idempotencyStore.remember(tenantId, eventId); }
+        });
     }
 
     private void enqueueAfterCommit(Long deliveryId) {
@@ -81,6 +98,7 @@ public class EventService {
             @Override public void afterCommit() { deliveryQueue.enqueue(deliveryId); }
         });
     }
+
     private String writePayload(Object data) {
         try {
             return objectMapper.writeValueAsString(data == null ? java.util.Map.of() : data);
