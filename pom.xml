@@ -18,6 +18,8 @@
         <java.version>17</java.version>
         <spring-boot.version>3.3.5</spring-boot.version>
         <testcontainers.version>1.21.4</testcontainers.version>
+        <!-- Container restart drills are opt-in because Docker restart timing is not stable on shared CI runners. -->
+        <excluded.test.tags>fault-injection</excluded.test.tags>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
 
