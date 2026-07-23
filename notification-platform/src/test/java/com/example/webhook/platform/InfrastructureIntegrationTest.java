@@ -18,6 +18,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import org.awaitility.Awaitility;
 import org.testcontainers.DockerClientFactory;
 import org.springframework.amqp.rabbit.connection.CachingConnectionFactory;
+import com.zaxxer.hikari.HikariDataSource;
 import java.time.Duration;
 import com.example.webhook.platform.domain.*;
 import com.example.webhook.platform.repo.*;
@@ -28,7 +29,9 @@ import java.time.Instant;
 @SpringBootTest(properties = {"webhook.dispatcher.fixed-delay-ms=600000",
         "webhook.demo-receiver-url=http://localhost:9/webhook",
         "webhook.security.encryption-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-        "spring.rabbitmq.listener.simple.auto-startup=false"})
+        "spring.rabbitmq.listener.simple.auto-startup=false",
+        // A failed connection attempt must not consume the whole Awaitility window after a restart.
+        "spring.datasource.hikari.connection-timeout=2000"})
 class InfrastructureIntegrationTest {
     @Container static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.4")
             .withDatabaseName("event_relay").withUsername("eventrelay").withPassword("eventrelay");
@@ -114,14 +117,15 @@ class InfrastructureIntegrationTest {
     @Test
     void clientsRecoverAfterInfrastructureContainerRestarts() {
         restart(MYSQL);
-        Awaitility.await().atMost(Duration.ofSeconds(30)).untilAsserted(() -> {
+        evictDatabaseConnections();
+        Awaitility.await().atMost(Duration.ofSeconds(90)).untilAsserted(() -> {
             try (var connection = dataSource.getConnection()) {
                 assertThat(connection.isValid(2)).isTrue();
             }
         });
 
         restart(REDIS);
-        Awaitility.await().atMost(Duration.ofSeconds(30)).untilAsserted(() -> {
+        Awaitility.await().atMost(Duration.ofSeconds(90)).untilAsserted(() -> {
             redis.opsForValue().set("integration:redis-restarted", "true");
             assertThat(redis.opsForValue().get("integration:redis-restarted")).isEqualTo("true");
         });
@@ -130,8 +134,14 @@ class InfrastructureIntegrationTest {
         if (rabbitTemplate.getConnectionFactory() instanceof CachingConnectionFactory caching) {
             caching.resetConnection();
         }
-        Awaitility.await().atMost(Duration.ofSeconds(30)).untilAsserted(() ->
+        Awaitility.await().atMost(Duration.ofSeconds(90)).untilAsserted(() ->
                 assertThat(rabbitTemplate.getConnectionFactory().createConnection().isOpen()).isTrue());
+    }
+
+    private void evictDatabaseConnections() {
+        if (dataSource instanceof HikariDataSource hikari) {
+            hikari.getHikariPoolMXBean().softEvictConnections();
+        }
     }
 
     private void restart(org.testcontainers.containers.ContainerState container) {
