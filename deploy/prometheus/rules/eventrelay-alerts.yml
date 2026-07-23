@@ -1,0 +1,32 @@
+groups:
+  - name: eventrelay
+    rules:
+      - alert: EventRelayDown
+        expr: up{job="eventrelay"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: EventRelay is unavailable
+      - alert: EventRelayOutboxBacklog
+        expr: webhook_outbox_pending > 100
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: Transactional outbox backlog is growing
+      - alert: EventRelayOutboxPublishFailures
+        expr: increase(webhook_outbox_failure_total[5m]) > 5
+        labels: { severity: critical }
+        annotations:
+          summary: RabbitMQ publishing is repeatedly failing
+      - alert: EventRelayHighDeliveryFailureRate
+        expr: sum(rate(webhook_delivery_failure_total[5m])) / clamp_min(sum(rate(webhook_delivery_failure_total[5m])) + sum(rate(webhook_delivery_success_total[5m])), 0.001) > 0.05
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: Webhook delivery failure rate exceeds 5 percent
+      - alert: EventRelayHighP99Latency
+        expr: histogram_quantile(0.99, sum(rate(webhook_delivery_duration_seconds_bucket[5m])) by (le)) > 3
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: Webhook delivery p99 latency exceeds 3 seconds

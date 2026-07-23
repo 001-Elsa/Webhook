@@ -4,6 +4,8 @@ import com.example.webhook.platform.domain.*;
 import com.example.webhook.platform.queue.DeliveryQueue;
 import com.example.webhook.platform.repo.DeliveryAttemptRepository;
 import com.example.webhook.platform.repo.DeliveryTaskRepository;
+import com.example.webhook.platform.repo.EventRecordRepository;
+import com.example.webhook.platform.security.WebhookSecretCipher;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.springframework.beans.factory.annotation.Value;
@@ -12,11 +14,10 @@ import org.springframework.http.MediaType;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestClientResponseException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -28,24 +29,38 @@ public class DeliveryService {
     private final String workerId = "worker-" + UUID.randomUUID();
     private final DeliveryTaskRepository deliveryRepository;
     private final DeliveryAttemptRepository attemptRepository;
+    private final EventRecordRepository eventRepository;
     private final SignatureService signatureService;
     private final RateLimiter rateLimiter;
     private final DeliveryQueue deliveryQueue;
+    private final OutboxService outboxService;
+    private final WebhookSecretCipher secretCipher;
+    private final DeliveryStateMachine deliveryStateMachine;
+    private final EventStateMachine eventStateMachine;
     private final RestClient restClient;
     private final MeterRegistry meterRegistry;
     private final TransactionTemplate transactionTemplate;
     private final int recoveryBatchSize;
 
     public DeliveryService(DeliveryTaskRepository deliveryRepository, DeliveryAttemptRepository attemptRepository,
+                           EventRecordRepository eventRepository,
                            SignatureService signatureService, RateLimiter rateLimiter, DeliveryQueue deliveryQueue,
+                           OutboxService outboxService,
+                           WebhookSecretCipher secretCipher,
+                           DeliveryStateMachine deliveryStateMachine, EventStateMachine eventStateMachine,
                            RestClient.Builder restClientBuilder, MeterRegistry meterRegistry,
                            TransactionTemplate transactionTemplate,
                            @Value("${webhook.queue.recovery-batch-size:100}") int recoveryBatchSize) {
         this.deliveryRepository = deliveryRepository;
         this.attemptRepository = attemptRepository;
+        this.eventRepository = eventRepository;
         this.signatureService = signatureService;
         this.rateLimiter = rateLimiter;
         this.deliveryQueue = deliveryQueue;
+        this.outboxService = outboxService;
+        this.secretCipher = secretCipher;
+        this.deliveryStateMachine = deliveryStateMachine;
+        this.eventStateMachine = eventStateMachine;
         this.restClient = restClientBuilder.build();
         this.meterRegistry = meterRegistry;
         this.transactionTemplate = transactionTemplate;
@@ -57,7 +72,10 @@ public class DeliveryService {
     public void recoverDueTasks() {
         deliveryRepository.findByStatusInAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAsc(
                 List.of(DeliveryStatus.PENDING, DeliveryStatus.RETRYING), Instant.now(),
-                PageRequest.of(0, recoveryBatchSize)).forEach(task -> deliveryQueue.enqueue(task.getId()));
+                PageRequest.of(0, recoveryBatchSize)).forEach(task -> {
+                    deliveryQueue.enqueue(task.getId());
+                    meterRegistry.counter("webhook.delivery.recovered").increment();
+                });
     }
 
     public Outcome processDelivery(Long deliveryId) {
@@ -67,37 +85,55 @@ public class DeliveryService {
         return saveResult(deliveryId, result);
     }
 
-    public int attemptCount(Long deliveryId) {
-        return deliveryRepository.findById(deliveryId).map(DeliveryTask::getAttemptCount).orElse(1);
-    }
-
     @Transactional
-    public DeliveryTask retryNow(Long deliveryId) {
-        DeliveryTask task = deliveryRepository.findById(deliveryId)
+    public DeliveryTask retryNow(Long deliveryId, String tenantId) {
+        DeliveryTask task = deliveryRepository.findByIdAndEventTenantId(deliveryId, tenantId)
                 .orElseThrow(() -> new IllegalArgumentException("Delivery task not found: " + deliveryId));
-        task.setStatus(DeliveryStatus.RETRYING);
+        if (task.getStatus() != DeliveryStatus.DEAD) {
+            throw new IllegalArgumentException("Only DEAD delivery tasks can be manually retried");
+        }
+        deliveryStateMachine.transition(task, DeliveryStatus.RETRYING);
         task.setNextAttemptAt(Instant.now());
         task.setLastError("Manual retry requested");
         DeliveryTask saved = deliveryRepository.save(task);
-        enqueueAfterCommit(deliveryId);
+        outboxService.add(deliveryId, OutboxMessageType.DELIVERY, task.getAttemptCount());
+        refreshEventStatus(task.getEvent());
         return saved;
     }
 
     @Transactional
-    public int retryDeadTasks() {
-        List<DeliveryTask> tasks = deliveryRepository.findTop100ByStatusOrderByUpdatedAtDesc(DeliveryStatus.DEAD);
+    public int retryDeadTasks(String tenantId) {
+        List<DeliveryTask> tasks = deliveryRepository.findTop100ByEventTenantIdAndStatusOrderByUpdatedAtDesc(
+                tenantId, DeliveryStatus.DEAD);
         tasks.forEach(task -> {
-            task.setStatus(DeliveryStatus.RETRYING);
+            deliveryStateMachine.transition(task, DeliveryStatus.RETRYING);
             task.setNextAttemptAt(Instant.now());
             task.setLastError("Batch dead-letter replay requested");
-            enqueueAfterCommit(task.getId());
+            outboxService.add(task.getId(), OutboxMessageType.DELIVERY, task.getAttemptCount());
+            refreshEventStatus(task.getEvent());
         });
         return tasks.size();
+    }
+
+    @Transactional
+    public void markUnexpectedFailureDead(Long deliveryId, String error) {
+        DeliveryTask task = deliveryRepository.findWithEventAndEndpointById(deliveryId)
+                .orElseThrow(() -> new IllegalArgumentException("Delivery task not found: " + deliveryId));
+        if (task.getStatus() == DeliveryStatus.SUCCEEDED || task.getStatus() == DeliveryStatus.DEAD) return;
+        deliveryStateMachine.transition(task, DeliveryStatus.DEAD);
+        task.setLastError(truncate(error, 1000));
+        unlock(task);
+        deliveryRepository.save(task);
+        outboxService.add(task.getId(), OutboxMessageType.DEAD, task.getAttemptCount());
+        refreshEventStatus(task.getEvent());
     }
 
     private ClaimedDelivery claimDelivery(Long deliveryId) {
         return transactionTemplate.execute(status -> {
             DeliveryTask snapshot = deliveryRepository.findWithEventAndEndpointById(deliveryId).orElse(null);
+            if (snapshot != null && snapshot.getStatus() == DeliveryStatus.DEAD) {
+                return new ClaimedDelivery(null, Outcome.DEAD);
+            }
             if (snapshot == null || (snapshot.getStatus() != DeliveryStatus.PENDING && snapshot.getStatus() != DeliveryStatus.RETRYING)) {
                 return new ClaimedDelivery(null, Outcome.SKIPPED);
             }
@@ -124,24 +160,33 @@ public class DeliveryService {
         WebhookEndpoint endpoint = task.getEndpoint();
         int attemptNo = task.getAttemptCount() + 1;
         Instant timestamp = Instant.now();
-        String signature = signatureService.sign(endpoint.getSecret(), timestamp, event.getEventId(), event.getPayload());
+        String signature = signatureService.sign(secretCipher.decrypt(endpoint.getEncryptedSecret()), timestamp,
+                event.getEventId(), event.getPayload());
         long started = System.nanoTime();
         Outcome outcome = Outcome.RETRY;
         DeliveryResult result = new DeliveryResult(attemptNo);
         try {
-            String response = restClient.post().uri(endpoint.getUrl()).contentType(MediaType.APPLICATION_JSON)
+            var response = restClient.post().uri(endpoint.getUrl()).contentType(MediaType.APPLICATION_JSON)
                     .header("X-Webhook-Event-Id", event.getEventId())
                     .header("X-Webhook-Event-Type", event.getType())
                     .header("X-Webhook-Delivery-Id", String.valueOf(task.getId()))
                     .header("X-Webhook-Timestamp", String.valueOf(timestamp.toEpochMilli()))
                     .header("X-Webhook-Signature", signature)
                     .header("X-Trace-Id", event.getTraceId() == null ? event.getEventId() : event.getTraceId())
-                    .body(event.getPayload()).retrieve().body(String.class);
+                    .body(event.getPayload()).retrieve().toEntity(String.class);
             result.success = true;
-            result.statusCode = 200;
-            result.responseBody = truncate(response, 2000);
-            meterRegistry.counter("webhook.delivery.success", "endpoint", endpoint.getName()).increment();
+            result.statusCode = response.getStatusCode().value();
+            result.responseBody = truncate(response.getBody(), 2000);
+            meterRegistry.counter("webhook.delivery.success").increment();
             outcome = Outcome.DONE;
+        } catch (RestClientResponseException ex) {
+            result.success = false;
+            result.statusCode = ex.getStatusCode().value();
+            result.responseBody = truncate(ex.getResponseBodyAsString(), 2000);
+            result.errorMessage = truncate(ex.getMessage(), 1000);
+            if (attemptNo >= endpoint.getMaxAttempts()) outcome = Outcome.DEAD;
+            else result.nextAttemptAt = Instant.now().plusSeconds(retryDelaySeconds(attemptNo));
+            meterRegistry.counter("webhook.delivery.failure").increment();
         } catch (RestClientException ex) {
             result.success = false;
             result.errorMessage = truncate(ex.getMessage(), 1000);
@@ -151,11 +196,11 @@ public class DeliveryService {
                 result.nextAttemptAt = Instant.now().plusSeconds(retryDelaySeconds(attemptNo));
                 outcome = Outcome.RETRY;
             }
-            meterRegistry.counter("webhook.delivery.failure", "endpoint", endpoint.getName()).increment();
+            meterRegistry.counter("webhook.delivery.failure").increment();
         } finally {
             result.outcome = outcome;
             result.durationMs = Duration.ofNanos(System.nanoTime() - started).toMillis();
-            sample.stop(Timer.builder("webhook.delivery.duration").tag("endpoint", endpoint.getName()).register(meterRegistry));
+            sample.stop(Timer.builder("webhook.delivery.duration").register(meterRegistry));
         }
         return result;
     }
@@ -174,34 +219,43 @@ public class DeliveryService {
             attempt.setDurationMs(result.durationMs);
             task.setAttemptCount(result.attemptNo);
             if (result.outcome == Outcome.DONE) {
-                task.setStatus(DeliveryStatus.SUCCEEDED);
+                deliveryStateMachine.transition(task, DeliveryStatus.SUCCEEDED);
                 task.setLastError(null);
-                task.setLastStatusCode(200);
+                task.setLastStatusCode(result.statusCode);
             } else if (result.outcome == Outcome.DEAD) {
-                task.setStatus(DeliveryStatus.DEAD);
+                deliveryStateMachine.transition(task, DeliveryStatus.DEAD);
                 task.setLastError(result.errorMessage);
-                task.setLastStatusCode(null);
+                task.setLastStatusCode(result.statusCode);
             } else {
-                task.setStatus(DeliveryStatus.RETRYING);
+                deliveryStateMachine.transition(task, DeliveryStatus.RETRYING);
                 task.setNextAttemptAt(result.nextAttemptAt);
                 task.setLastError(result.errorMessage);
-                task.setLastStatusCode(null);
+                task.setLastStatusCode(result.statusCode);
             }
             unlock(task);
             attemptRepository.save(attempt);
             deliveryRepository.save(task);
+            if (result.outcome == Outcome.RETRY) {
+                outboxService.add(task.getId(), OutboxMessageType.RETRY, result.attemptNo);
+            } else if (result.outcome == Outcome.DEAD) {
+                outboxService.add(task.getId(), OutboxMessageType.DEAD, result.attemptNo);
+            }
+            meterRegistry.counter("webhook.delivery.outcome", "outcome", result.outcome.name()).increment();
+            refreshEventStatus(task.getEvent());
             return result.outcome;
         });
     }
 
-    private void enqueueAfterCommit(Long deliveryId) {
-        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            deliveryQueue.enqueue(deliveryId);
-            return;
-        }
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override public void afterCommit() { deliveryQueue.enqueue(deliveryId); }
-        });
+    private void refreshEventStatus(EventRecord event) {
+        long pending = deliveryRepository.countByEventIdAndStatus(event.getId(), DeliveryStatus.PENDING)
+                + deliveryRepository.countByEventIdAndStatus(event.getId(), DeliveryStatus.RETRYING);
+        long succeeded = deliveryRepository.countByEventIdAndStatus(event.getId(), DeliveryStatus.SUCCEEDED);
+        long dead = deliveryRepository.countByEventIdAndStatus(event.getId(), DeliveryStatus.DEAD);
+        if (pending > 0) eventStateMachine.transition(event, EventStatus.DISPATCHING);
+        else if (dead == 0) eventStateMachine.transition(event, EventStatus.COMPLETED);
+        else if (succeeded == 0) eventStateMachine.transition(event, EventStatus.DEAD);
+        else eventStateMachine.transition(event, EventStatus.PARTIALLY_FAILED);
+        eventRepository.save(event);
     }
 
     private long retryDelaySeconds(int attemptNo) { return attemptNo <= 1 ? 5 : attemptNo <= 3 ? 30 : 120; }

@@ -15,7 +15,8 @@ import static org.mockito.Mockito.*;
 class EventControllerTenantIsolationTest {
     private final EventService eventService = mock(EventService.class);
     private final EventRecordRepository eventRepository = mock(EventRecordRepository.class);
-    private final EventController controller = new EventController(eventService, eventRepository);
+    private final EventController controller = new EventController(eventService, eventRepository,
+            new com.fasterxml.jackson.databind.ObjectMapper());
 
     @AfterEach
     void clearContext() {

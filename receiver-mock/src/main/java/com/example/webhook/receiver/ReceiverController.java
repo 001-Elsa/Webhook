@@ -15,13 +15,21 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import org.springframework.beans.factory.annotation.Value;
 
 @RestController
 public class ReceiverController {
     private final List<ReceivedWebhook> received = new ArrayList<>();
     private final AtomicInteger failNext = new AtomicInteger(1);
     private final Set<String> processedDeliveries = ConcurrentHashMap.newKeySet();
-    private volatile String secret = "demo-secret";
+    private final String secret;
+
+    public ReceiverController(@Value("${receiver.webhook-secret}") String secret) {
+        if (secret == null || secret.isBlank()) {
+            throw new IllegalStateException("RECEIVER_WEBHOOK_SECRET is required");
+        }
+        this.secret = secret;
+    }
 
     @PostMapping("/webhook/{merchant}")
     public Map<String, Object> receive(@PathVariable String merchant,
@@ -63,15 +71,12 @@ public class ReceiverController {
         if (request.failNext() != null) {
             failNext.set(request.failNext());
         }
-        if (request.secret() != null && !request.secret().isBlank()) {
-            secret = request.secret();
-        }
-        return Map.of("failNext", failNext.get(), "secret", secret);
+        return Map.of("failNext", failNext.get(), "secretConfigured", true);
     }
 
     @GetMapping("/api/config")
     public Map<String, Object> config() {
-        return Map.of("failNext", failNext.get(), "secret", secret);
+        return Map.of("failNext", failNext.get(), "secretConfigured", true);
     }
 
     private boolean verify(String timestamp, String eventId, String payload, String signatureHeader) {
@@ -86,6 +91,6 @@ public class ReceiverController {
         }
     }
 
-    public record ReceiverConfig(Integer failNext, String secret) {
+    public record ReceiverConfig(Integer failNext) {
     }
 }

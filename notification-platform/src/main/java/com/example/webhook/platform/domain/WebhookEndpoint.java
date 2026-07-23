@@ -15,8 +15,8 @@ public class WebhookEndpoint {
     private String name;
     @Column(nullable = false, length = 500)
     private String url;
-    @Column(nullable = false, length = 200)
-    private String secret;
+    @Column(name = "secret_encrypted", nullable = false, length = 500)
+    private String encryptedSecret;
     @Column(nullable = false, length = 500)
     private String eventTypes = "*";
     @Column(nullable = false)
@@ -35,8 +35,8 @@ public class WebhookEndpoint {
     public void setName(String name) { this.name = name; }
     public String getUrl() { return url; }
     public void setUrl(String url) { this.url = url; }
-    public String getSecret() { return secret; }
-    public void setSecret(String secret) { this.secret = secret; }
+    public String getEncryptedSecret() { return encryptedSecret; }
+    public void setEncryptedSecret(String encryptedSecret) { this.encryptedSecret = encryptedSecret; }
     public String getEventTypes() { return eventTypes; }
     public void setEventTypes(String eventTypes) { this.eventTypes = eventTypes; }
     public boolean isActive() { return active; }

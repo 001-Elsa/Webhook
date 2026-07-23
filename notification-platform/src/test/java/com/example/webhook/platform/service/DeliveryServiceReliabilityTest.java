@@ -8,6 +8,8 @@ import com.example.webhook.platform.domain.WebhookEndpoint;
 import com.example.webhook.platform.queue.DeliveryQueue;
 import com.example.webhook.platform.repo.DeliveryAttemptRepository;
 import com.example.webhook.platform.repo.DeliveryTaskRepository;
+import com.example.webhook.platform.repo.EventRecordRepository;
+import com.example.webhook.platform.security.WebhookSecretCipher;
 import com.sun.net.httpserver.HttpServer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
@@ -37,9 +39,12 @@ import static org.mockito.Mockito.*;
 class DeliveryServiceReliabilityTest {
     @Mock DeliveryTaskRepository deliveryRepository;
     @Mock DeliveryAttemptRepository attemptRepository;
+    @Mock EventRecordRepository eventRepository;
     @Mock SignatureService signatureService;
     @Mock RateLimiter rateLimiter;
     @Mock DeliveryQueue deliveryQueue;
+    @Mock OutboxService outboxService;
+    @Mock WebhookSecretCipher secretCipher;
     @Mock TransactionTemplate transactionTemplate;
 
     @AfterEach
@@ -63,18 +68,36 @@ class DeliveryServiceReliabilityTest {
     }
 
     @Test
-    void manualRetryPublishesMessageOnlyAfterCommit() {
+    void duplicateMessageForSucceededTaskIsSkippedWithoutCallingReceiver() {
+        DeliveryTask task = task(13L);
+        task.setStatus(DeliveryStatus.SUCCEEDED);
+        when(transactionTemplate.execute(any())).thenAnswer(invocation -> {
+            TransactionCallback<?> callback = invocation.getArgument(0);
+            return callback.doInTransaction(null);
+        });
+        when(deliveryRepository.findWithEventAndEndpointById(13L)).thenReturn(Optional.of(task));
+
+        DeliveryService.Outcome outcome = service().processDelivery(13L);
+
+        assertThat(outcome).isEqualTo(DeliveryService.Outcome.SKIPPED);
+        verifyNoInteractions(signatureService);
+    }
+
+    @Test
+    void manualRetryStoresOutboxMessageInSameTransaction() {
         DeliveryTask task = task(21L);
         task.setStatus(DeliveryStatus.DEAD);
-        when(deliveryRepository.findById(21L)).thenReturn(Optional.of(task));
+        EventRecord event = new EventRecord();
+        ReflectionTestUtils.setField(event, "id", 201L);
+        event.setStatus(EventStatus.DEAD);
+        task.setEvent(event);
+        when(deliveryRepository.findByIdAndEventTenantId(21L, "tenant-a")).thenReturn(Optional.of(task));
         when(deliveryRepository.save(task)).thenReturn(task);
 
         TransactionSynchronizationManager.initSynchronization();
-        service().retryNow(21L);
+        service().retryNow(21L, "tenant-a");
 
-        verify(deliveryQueue, never()).enqueue(any());
-        TransactionSynchronizationManager.getSynchronizations().forEach(synchronization -> synchronization.afterCommit());
-        verify(deliveryQueue).enqueue(21L);
+        verify(outboxService).add(21L, com.example.webhook.platform.domain.OutboxMessageType.DELIVERY, 0);
     }
 
     @Test
@@ -84,6 +107,7 @@ class DeliveryServiceReliabilityTest {
             DeliveryTask task = deliveryTaskWithEndpoint(31L, server, 0, 5);
             stubProcessingTransaction(task);
             when(signatureService.sign(any(), any(), any(), any())).thenReturn("signature");
+            when(secretCipher.decrypt(any())).thenReturn("secret");
             when(rateLimiter.tryAcquire(any(), anyInt())).thenReturn(true);
 
             DeliveryService.Outcome outcome = service().processDelivery(31L);
@@ -91,9 +115,11 @@ class DeliveryServiceReliabilityTest {
             assertThat(outcome).isEqualTo(DeliveryService.Outcome.RETRY);
             assertThat(task.getStatus()).isEqualTo(DeliveryStatus.RETRYING);
             assertThat(task.getAttemptCount()).isEqualTo(1);
+            assertThat(task.getLastStatusCode()).isEqualTo(500);
             assertThat(task.getNextAttemptAt()).isAfter(Instant.now().plusSeconds(3));
             assertThat(task.getNextAttemptAt()).isBefore(Instant.now().plusSeconds(8));
             verify(attemptRepository).save(any());
+            verify(outboxService).add(31L, com.example.webhook.platform.domain.OutboxMessageType.RETRY, 1);
         } finally {
             server.stop(0);
         }
@@ -106,6 +132,7 @@ class DeliveryServiceReliabilityTest {
             DeliveryTask task = deliveryTaskWithEndpoint(41L, server, 1, 2);
             stubProcessingTransaction(task);
             when(signatureService.sign(any(), any(), any(), any())).thenReturn("signature");
+            when(secretCipher.decrypt(any())).thenReturn("secret");
             when(rateLimiter.tryAcquire(any(), anyInt())).thenReturn(true);
 
             DeliveryService.Outcome outcome = service().processDelivery(41L);
@@ -113,14 +140,37 @@ class DeliveryServiceReliabilityTest {
             assertThat(outcome).isEqualTo(DeliveryService.Outcome.DEAD);
             assertThat(task.getStatus()).isEqualTo(DeliveryStatus.DEAD);
             assertThat(task.getAttemptCount()).isEqualTo(2);
+            assertThat(task.getLastStatusCode()).isEqualTo(500);
             verify(attemptRepository).save(any());
+            verify(outboxService).add(41L, com.example.webhook.platform.domain.OutboxMessageType.DEAD, 2);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void successfulDeliveryPreservesActualHttpStatusAndCompletesEvent() throws Exception {
+        HttpServer server = successfulServer(202);
+        try {
+            DeliveryTask task = deliveryTaskWithEndpoint(51L, server, 0, 5);
+            stubProcessingTransaction(task);
+            when(signatureService.sign(any(), any(), any(), any())).thenReturn("signature");
+            when(secretCipher.decrypt(any())).thenReturn("secret");
+            when(rateLimiter.tryAcquire(any(), anyInt())).thenReturn(true);
+
+            DeliveryService.Outcome outcome = service().processDelivery(51L);
+
+            assertThat(outcome).isEqualTo(DeliveryService.Outcome.DONE);
+            assertThat(task.getLastStatusCode()).isEqualTo(202);
+            assertThat(task.getEvent().getStatus()).isEqualTo(EventStatus.COMPLETED);
         } finally {
             server.stop(0);
         }
     }
 
     private DeliveryService service() {
-        return new DeliveryService(deliveryRepository, attemptRepository, signatureService, rateLimiter, deliveryQueue,
+        return new DeliveryService(deliveryRepository, attemptRepository, eventRepository, signatureService, rateLimiter,
+                deliveryQueue, outboxService, secretCipher, new DeliveryStateMachine(), new EventStateMachine(),
                 RestClient.builder(), new SimpleMeterRegistry(), transactionTemplate, 100);
     }
 
@@ -156,7 +206,7 @@ class DeliveryServiceReliabilityTest {
         endpoint.setTenantId("tenant-a");
         endpoint.setName("receiver-" + id);
         endpoint.setUrl("http://localhost:" + server.getAddress().getPort() + "/webhook");
-        endpoint.setSecret("secret");
+        endpoint.setEncryptedSecret("v1:encrypted");
         endpoint.setMaxAttempts(maxAttempts);
         endpoint.setRateLimitPerMinute(100);
 
@@ -168,9 +218,13 @@ class DeliveryServiceReliabilityTest {
     }
 
     private HttpServer failingServer() throws Exception {
+        return successfulServer(500);
+    }
+
+    private HttpServer successfulServer(int status) throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         server.createContext("/webhook", exchange -> {
-            exchange.sendResponseHeaders(500, -1);
+            exchange.sendResponseHeaders(status, -1);
             exchange.close();
         });
         server.start();

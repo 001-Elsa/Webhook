@@ -19,21 +19,22 @@ public interface DeliveryTaskRepository extends JpaRepository<DeliveryTask, Long
             Collection<DeliveryStatus> statuses, Instant now, Pageable pageable);
 
     @EntityGraph(attributePaths = {"event", "endpoint"})
-    List<DeliveryTask> findTop100ByOrderByCreatedAtDesc();
+    List<DeliveryTask> findTop100ByEventTenantIdOrderByCreatedAtDesc(String tenantId);
 
     @EntityGraph(attributePaths = {"event", "endpoint"})
     @Query("select d from DeliveryTask d where d.id = :id")
     Optional<DeliveryTask> findWithEventAndEndpointById(@Param("id") Long id);
 
     @EntityGraph(attributePaths = {"event", "endpoint"})
-    List<DeliveryTask> findTop100ByStatusOrderByUpdatedAtDesc(DeliveryStatus status);
+    List<DeliveryTask> findTop100ByEventTenantIdAndStatusOrderByUpdatedAtDesc(String tenantId, DeliveryStatus status);
 
-    long countByStatus(DeliveryStatus status);
+    Optional<DeliveryTask> findByIdAndEventTenantId(Long id, String tenantId);
+
+    long countByEventTenantIdAndStatus(String tenantId, DeliveryStatus status);
+    long countByEventTenantId(String tenantId);
+    long countByEventIdAndStatus(Long eventId, DeliveryStatus status);
 
     long countByEventTenantIdAndEventEventId(String tenantId, String eventId);
-
-    @Query("select count(d) from DeliveryTask d where d.status in :statuses")
-    long countActive(Collection<DeliveryStatus> statuses);
 
     @Modifying
     @Query("""

@@ -34,7 +34,7 @@ class EventServiceReliabilityTest {
     @Mock WebhookEndpointRepository endpointRepository;
     @Mock DeliveryTaskRepository deliveryRepository;
     @Mock EndpointMatcher matcher;
-    @Mock DeliveryQueue deliveryQueue;
+    @Mock OutboxService outboxService;
     @Mock EventIdempotencyStore idempotencyStore;
 
     @AfterEach
@@ -63,7 +63,7 @@ class EventServiceReliabilityTest {
     }
 
     @Test
-    void newEventIsQueuedOnlyAfterTransactionCommit() {
+    void newEventAndOutboxMessageAreStoredInTheSameTransaction() {
         RequestContext.set(new ApiPrincipal("tenant-a", "app-a", ClientRole.ADMIN), "trace-a");
         WebhookEndpoint endpoint = endpoint();
         when(eventRepository.findByTenantIdAndEventId("tenant-a", "evt-2")).thenReturn(Optional.empty());
@@ -80,15 +80,14 @@ class EventServiceReliabilityTest {
         var response = service.submit(new SubmitEventRequest("evt-2", "order.created", Map.of("id", 2)));
 
         assertThat(response.duplicate()).isFalse();
-        verify(deliveryQueue, never()).enqueue(any());
+        verify(outboxService).add(42L, com.example.webhook.platform.domain.OutboxMessageType.DELIVERY, 0);
         TransactionSynchronizationManager.getSynchronizations().forEach(synchronization -> synchronization.afterCommit());
-        verify(deliveryQueue).enqueue(42L);
         verify(idempotencyStore).remember("tenant-a", "evt-2");
     }
 
     private EventService service() {
         return new EventService(new ObjectMapper(), eventRepository, endpointRepository, deliveryRepository,
-                matcher, deliveryQueue, idempotencyStore);
+                matcher, outboxService, idempotencyStore, new EventStateMachine());
     }
 
     private WebhookEndpoint endpoint() {
@@ -97,7 +96,7 @@ class EventServiceReliabilityTest {
         endpoint.setTenantId("tenant-a");
         endpoint.setName("receiver");
         endpoint.setUrl("http://localhost/webhook");
-        endpoint.setSecret("secret");
+        endpoint.setEncryptedSecret("v1:encrypted");
         endpoint.setEventTypes("*");
         return endpoint;
     }

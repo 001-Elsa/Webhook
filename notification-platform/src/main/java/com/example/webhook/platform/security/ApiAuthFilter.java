@@ -11,30 +11,34 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 import org.slf4j.MDC;
 import java.io.IOException;
-import java.security.MessageDigest;
 import java.util.UUID;
 import java.util.Set;
+import io.micrometer.core.instrument.MeterRegistry;
 
 @Component
 public class ApiAuthFilter extends OncePerRequestFilter {
     private static final Set<String> PUBLIC_PREFIXES = Set.of("/actuator", "/v3/api-docs", "/swagger-ui");
     private final ApplicationClientRepository clientRepository;
+    private final ApiKeyHasher apiKeyHasher;
+    private final MeterRegistry metrics;
 
-    public ApiAuthFilter(ApplicationClientRepository clientRepository) {
+    public ApiAuthFilter(ApplicationClientRepository clientRepository, ApiKeyHasher apiKeyHasher, MeterRegistry metrics) {
         this.clientRepository = clientRepository;
+        this.apiKeyHasher = apiKeyHasher;
+        this.metrics = metrics;
     }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
         String traceId = request.getHeader("X-Trace-Id");
-        String effectiveTraceId = traceId == null || traceId.isBlank() ? UUID.randomUUID().toString() : traceId;
+        String effectiveTraceId = traceId == null || !traceId.matches("[A-Za-z0-9._-]{1,80}")
+                ? UUID.randomUUID().toString() : traceId;
         response.setHeader("X-Trace-Id", effectiveTraceId);
 
         try {
             MDC.put("traceId", effectiveTraceId);
-            if (!request.getRequestURI().startsWith("/api") || isPublicApiRead(request)) {
-                RequestContext.set(new ApiPrincipal("demo-tenant", "web-console", ClientRole.ADMIN), effectiveTraceId);
+            if (!request.getRequestURI().startsWith("/api")) {
                 filterChain.doFilter(request, response);
                 return;
             }
@@ -59,26 +63,21 @@ public class ApiAuthFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String uri = request.getRequestURI();
-        return PUBLIC_PREFIXES.stream().anyMatch(uri::startsWith) || "/".equals(uri) || uri.endsWith(".html");
-    }
-
-    private boolean isPublicApiRead(HttpServletRequest request) {
-        return "GET".equalsIgnoreCase(request.getMethod())
-                && (request.getRequestURI().startsWith("/api/dashboard")
-                || request.getRequestURI().startsWith("/api/deliveries")
-                || request.getRequestURI().startsWith("/api/endpoints")
-                || request.getRequestURI().startsWith("/api/events"));
+        return PUBLIC_PREFIXES.stream().anyMatch(uri::startsWith);
     }
 
     private ApplicationClient authenticate(HttpServletRequest request, HttpServletResponse response) throws IOException {
         String appId = request.getHeader("X-App-Id");
         String apiKey = request.getHeader("X-Api-Key");
-        if (appId == null || apiKey == null) {
+        if (appId == null || apiKey == null || appId.isBlank() || apiKey.isBlank()
+                || appId.length() > 80 || apiKey.length() > 512) {
+            metrics.counter("webhook.auth.failure", "reason", "missing").increment();
             response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Missing X-App-Id or X-Api-Key");
             return null;
         }
         ApplicationClient client = clientRepository.findByAppIdAndActiveTrue(appId).orElse(null);
-        if (client == null || !MessageDigest.isEqual(client.getApiKey().getBytes(), apiKey.getBytes())) {
+        if (client == null || !apiKeyHasher.matches(apiKey, client.getApiKeyHash())) {
+            metrics.counter("webhook.auth.failure", "reason", "invalid").increment();
             response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Invalid API credential");
             return null;
         }
@@ -86,13 +85,10 @@ public class ApiAuthFilter extends OncePerRequestFilter {
     }
 
     private boolean isAllowed(HttpServletRequest request, ClientRole role) {
-        if ("GET".equalsIgnoreCase(request.getMethod())) {
-            return true;
-        }
+        if (role == ClientRole.ADMIN) return true;
         String uri = request.getRequestURI();
-        if (uri.startsWith("/api/events")) {
-            return role == ClientRole.ADMIN || role == ClientRole.PRODUCER;
-        }
-        return role == ClientRole.ADMIN;
+        return role == ClientRole.PRODUCER
+                && "POST".equalsIgnoreCase(request.getMethod())
+                && "/api/events".equals(uri);
     }
 }

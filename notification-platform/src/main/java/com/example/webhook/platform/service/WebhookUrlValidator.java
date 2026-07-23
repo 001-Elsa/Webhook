@@ -1,15 +1,31 @@
 package com.example.webhook.platform.service;
 
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 
 import java.net.InetAddress;
 import java.net.URI;
 import java.util.Locale;
 import java.util.Set;
+import java.util.Arrays;
+import java.util.stream.Collectors;
 
 @Component
 public class WebhookUrlValidator {
     private static final Set<String> ALLOWED_SCHEMES = Set.of("http", "https");
+    private final Set<String> allowedPrivateHosts;
+
+    public WebhookUrlValidator() {
+        this("");
+    }
+
+    @Autowired
+    public WebhookUrlValidator(@Value("${webhook.security.allowed-private-hosts:}") String allowedPrivateHosts) {
+        this.allowedPrivateHosts = Arrays.stream(allowedPrivateHosts.split(","))
+                .map(String::trim).filter(value -> !value.isBlank()).map(value -> value.toLowerCase(Locale.ROOT))
+                .collect(Collectors.toUnmodifiableSet());
+    }
 
     public void validate(String rawUrl) {
         URI uri = parse(rawUrl);
@@ -27,11 +43,7 @@ public class WebhookUrlValidator {
         if ("localhost".equalsIgnoreCase(host)) {
             throw new IllegalArgumentException("Webhook URL must not target localhost");
         }
-        for (InetAddress address : resolve(host)) {
-            if (isBlockedAddress(address)) {
-                throw new IllegalArgumentException("Webhook URL resolves to a private or local address");
-            }
-        }
+        resolveAndValidate(host);
     }
 
     private URI parse(String rawUrl) {
@@ -42,10 +54,19 @@ public class WebhookUrlValidator {
         }
     }
 
-    private InetAddress[] resolve(String host) {
+    public InetAddress[] resolveAndValidate(String host) {
         try {
-            return InetAddress.getAllByName(host);
+            InetAddress[] addresses = InetAddress.getAllByName(host);
+            if (!allowedPrivateHosts.contains(host.toLowerCase(Locale.ROOT))) {
+                for (InetAddress address : addresses) {
+                    if (isBlockedAddress(address)) {
+                        throw new IllegalArgumentException("Webhook URL resolves to a private or local address");
+                    }
+                }
+            }
+            return addresses;
         } catch (Exception ex) {
+            if (ex instanceof IllegalArgumentException illegalArgumentException) throw illegalArgumentException;
             throw new IllegalArgumentException("Webhook URL host cannot be resolved", ex);
         }
     }

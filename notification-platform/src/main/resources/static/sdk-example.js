@@ -1,12 +1,10 @@
-const PLATFORM_URL = "http://localhost:8080";
-
-export async function submitEvent({ type, eventId, data }) {
-  const response = await fetch(`${PLATFORM_URL}/api/events`, {
+export async function submitEvent({ platformUrl, appId, apiKey, type, eventId, data }) {
+  const response = await fetch(`${platformUrl}/api/events`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-App-Id": "demo-order-service",
-      "X-Api-Key": "order-key",
+      "X-App-Id": appId,
+      "X-Api-Key": apiKey,
       "X-Trace-Id": eventId || crypto.randomUUID()
     },
     body: JSON.stringify({ type, eventId, data })

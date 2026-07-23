@@ -10,4 +10,5 @@ public interface WebhookEndpointRepository extends JpaRepository<WebhookEndpoint
     List<WebhookEndpoint> findByTenantId(String tenantId);
     List<WebhookEndpoint> findByTenantIdAndActiveTrue(String tenantId);
     Optional<WebhookEndpoint> findByIdAndTenantId(Long id, String tenantId);
+    long countByTenantId(String tenantId);
 }

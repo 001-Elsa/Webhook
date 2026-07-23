@@ -10,9 +10,11 @@ import org.springframework.data.jpa.repository.Query;
 
 public interface DeliveryAttemptRepository extends JpaRepository<DeliveryAttempt, Long> {
     @EntityGraph(attributePaths = {"delivery", "delivery.event", "delivery.endpoint"})
-    List<DeliveryAttempt> findTop200ByOrderByCreatedAtDesc();
+    List<DeliveryAttempt> findTop200ByDeliveryEventTenantIdOrderByCreatedAtDesc(String tenantId);
 
     List<DeliveryAttempt> findByDeliveryIdOrderByCreatedAtDesc(Long deliveryId);
+
+    List<DeliveryAttempt> findByDeliveryIdAndDeliveryEventTenantIdOrderByCreatedAtDesc(Long deliveryId, String tenantId);
 
     @Modifying
     @Query("delete from DeliveryAttempt a where a.createdAt < :cutoff")

@@ -10,8 +10,8 @@ spring:
     name: notification-platform
   datasource:
     url: ${MYSQL_URL:jdbc:mysql://localhost:3306/event_relay?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
-    username: ${MYSQL_USER:eventrelay}
-    password: ${MYSQL_PASSWORD:eventrelay}
+    username: ${MYSQL_USER:}
+    password: ${MYSQL_PASSWORD:}
   jpa:
     hibernate:
       ddl-auto: validate
@@ -22,10 +22,12 @@ spring:
   rabbitmq:
     host: ${RABBITMQ_HOST:localhost}
     port: ${RABBITMQ_PORT:5672}
-    username: ${RABBITMQ_USER:eventrelay}
-    password: ${RABBITMQ_PASSWORD:eventrelay}
+    username: ${RABBITMQ_USER:}
+    password: ${RABBITMQ_PASSWORD:}
     publisher-confirm-type: correlated
     publisher-returns: true
+    template:
+      mandatory: true
     listener:
       simple:
         acknowledge-mode: manual
@@ -49,13 +51,28 @@ springdoc:
     path: /swagger-ui.html
 
 webhook:
+  demo:
+    enabled: ${WEBHOOK_DEMO_ENABLED:false}
+    admin-api-key: ${WEBHOOK_DEMO_ADMIN_API_KEY:}
+    producer-api-key: ${WEBHOOK_DEMO_PRODUCER_API_KEY:}
+    receiver-secret: ${WEBHOOK_DEMO_RECEIVER_SECRET:}
   dispatcher:
     fixed-delay-ms: 5000
   http:
     connect-timeout-ms: ${WEBHOOK_CONNECT_TIMEOUT_MS:2000}
     read-timeout-ms: ${WEBHOOK_READ_TIMEOUT_MS:5000}
+  security:
+    allowed-private-hosts: ${WEBHOOK_ALLOWED_PRIVATE_HOSTS:}
+    encryption-key: ${WEBHOOK_ENCRYPTION_KEY:}
+  outbox:
+    fixed-delay-ms: ${WEBHOOK_OUTBOX_FIXED_DELAY_MS:250}
+    batch-size: ${WEBHOOK_OUTBOX_BATCH_SIZE:100}
+  event-reconciler:
+    fixed-delay-ms: ${WEBHOOK_EVENT_RECONCILER_DELAY_MS:5000}
+    batch-size: ${WEBHOOK_EVENT_RECONCILER_BATCH_SIZE:200}
   queue:
     recovery-batch-size: 100
   retention:
     delivery-attempt-days: ${DELIVERY_ATTEMPT_RETENTION_DAYS:30}
+    outbox-days: ${OUTBOX_RETENTION_DAYS:7}
     cleanup-cron: "0 30 3 * * *"

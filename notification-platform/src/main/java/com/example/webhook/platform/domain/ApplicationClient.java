@@ -13,8 +13,8 @@ public class ApplicationClient {
     private String tenantId;
     @Column(nullable = false, length = 80)
     private String appId;
-    @Column(nullable = false, length = 200)
-    private String apiKey;
+    @Column(name = "api_key_hash", nullable = false, length = 200)
+    private String apiKeyHash;
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 30)
     private ClientRole role = ClientRole.PRODUCER;
@@ -28,8 +28,8 @@ public class ApplicationClient {
     public void setTenantId(String tenantId) { this.tenantId = tenantId; }
     public String getAppId() { return appId; }
     public void setAppId(String appId) { this.appId = appId; }
-    public String getApiKey() { return apiKey; }
-    public void setApiKey(String apiKey) { this.apiKey = apiKey; }
+    public String getApiKeyHash() { return apiKeyHash; }
+    public void setApiKeyHash(String apiKeyHash) { this.apiKeyHash = apiKeyHash; }
     public ClientRole getRole() { return role; }
     public void setRole(ClientRole role) { this.role = role; }
     public boolean isActive() { return active; }

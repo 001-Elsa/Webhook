@@ -13,9 +13,15 @@ import java.util.concurrent.ConcurrentHashMap;
 public class OrderService {
     private final Map<String, OrderRecord> orders = new ConcurrentHashMap<>();
     private final RestClient platformClient;
+    private final String appId;
+    private final String apiKey;
 
-    public OrderService(RestClient.Builder builder, @Value("${notification.platform-url}") String platformUrl) {
+    public OrderService(RestClient.Builder builder, @Value("${notification.platform-url}") String platformUrl,
+                        @Value("${notification.app-id}") String appId,
+                        @Value("${notification.api-key}") String apiKey) {
         this.platformClient = builder.baseUrl(platformUrl).build();
+        this.appId = appId;
+        this.apiKey = apiKey;
     }
 
     public OrderRecord create(BigDecimal amount) {
@@ -44,8 +50,8 @@ public class OrderService {
     private void publish(String type, OrderRecord order) {
         platformClient.post()
                     .uri("/api/events")
-                    .header("X-App-Id", "demo-order-service")
-                    .header("X-Api-Key", "order-key")
+                    .header("X-App-Id", appId)
+                    .header("X-Api-Key", apiKey)
                     .header("X-Trace-Id", "order-" + order.orderId())
                     .body(Map.of(
                         "eventId", type + ":" + order.orderId() + ":" + UUID.randomUUID(),

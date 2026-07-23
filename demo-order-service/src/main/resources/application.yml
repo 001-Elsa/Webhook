@@ -7,3 +7,5 @@ spring:
 
 notification:
   platform-url: http://localhost:8080
+  app-id: ${NOTIFICATION_APP_ID:}
+  api-key: ${NOTIFICATION_API_KEY:}

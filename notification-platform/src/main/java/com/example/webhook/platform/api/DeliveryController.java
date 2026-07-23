@@ -1,10 +1,12 @@
 package com.example.webhook.platform.api;
 
-import com.example.webhook.platform.domain.DeliveryAttempt;
+import com.example.webhook.platform.api.dto.DeliveryAttemptResponse;
+import com.example.webhook.platform.api.dto.DeliveryResponse;
 import com.example.webhook.platform.domain.DeliveryTask;
 import com.example.webhook.platform.repo.DeliveryAttemptRepository;
 import com.example.webhook.platform.repo.DeliveryTaskRepository;
 import com.example.webhook.platform.service.DeliveryService;
+import com.example.webhook.platform.security.RequestContext;
 import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.Map;
@@ -24,34 +26,43 @@ public class DeliveryController {
     }
 
     @GetMapping
-    public List<DeliveryTask> list() {
-        return deliveryRepository.findTop100ByOrderByCreatedAtDesc();
+    public List<DeliveryResponse> list() {
+        return deliveryRepository.findTop100ByEventTenantIdOrderByCreatedAtDesc(tenantId()).stream()
+                .map(DeliveryResponse::from).toList();
     }
 
     @GetMapping("/attempts")
-    public List<DeliveryAttempt> attempts() {
-        return attemptRepository.findTop200ByOrderByCreatedAtDesc();
+    public List<DeliveryAttemptResponse> attempts() {
+        return attemptRepository.findTop200ByDeliveryEventTenantIdOrderByCreatedAtDesc(tenantId()).stream()
+                .map(DeliveryAttemptResponse::from).toList();
     }
 
     @GetMapping("/{id}/attempts")
-    public List<DeliveryAttempt> attemptsByDelivery(@PathVariable Long id) {
-        return attemptRepository.findByDeliveryIdOrderByCreatedAtDesc(id);
+    public List<DeliveryAttemptResponse> attemptsByDelivery(@PathVariable Long id) {
+        return attemptRepository.findByDeliveryIdAndDeliveryEventTenantIdOrderByCreatedAtDesc(id, tenantId()).stream()
+                .map(DeliveryAttemptResponse::from).toList();
     }
 
     @GetMapping("/dead-letter")
-    public List<DeliveryTask> deadLetters() {
-        return deliveryRepository.findTop100ByStatusOrderByUpdatedAtDesc(com.example.webhook.platform.domain.DeliveryStatus.DEAD);
+    public List<DeliveryResponse> deadLetters() {
+        return deliveryRepository.findTop100ByEventTenantIdAndStatusOrderByUpdatedAtDesc(
+                        tenantId(), com.example.webhook.platform.domain.DeliveryStatus.DEAD).stream()
+                .map(DeliveryResponse::from).toList();
     }
 
     @PostMapping("/{id}/retry")
     public Map<String, Object> retry(@PathVariable Long id) {
-        DeliveryTask task = deliveryService.retryNow(id);
+        DeliveryTask task = deliveryService.retryNow(id, tenantId());
         return Map.of("deliveryId", task.getId(), "status", task.getStatus(), "nextAttemptAt", task.getNextAttemptAt());
     }
 
     @PostMapping("/dead-letter/replay")
     public Map<String, Object> replayDeadLetters() {
-        int count = deliveryService.retryDeadTasks();
+        int count = deliveryService.retryDeadTasks(tenantId());
         return Map.of("replayed", count);
+    }
+
+    private String tenantId() {
+        return RequestContext.principal().tenantId();
     }
 }

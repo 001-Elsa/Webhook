@@ -4,3 +4,6 @@ server:
 spring:
   application:
     name: receiver-mock
+
+receiver:
+  webhook-secret: ${RECEIVER_WEBHOOK_SECRET:}

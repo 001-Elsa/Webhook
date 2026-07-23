@@ -6,7 +6,7 @@ import com.example.webhook.platform.domain.DeliveryTask;
 import com.example.webhook.platform.domain.EventRecord;
 import com.example.webhook.platform.domain.EventStatus;
 import com.example.webhook.platform.domain.WebhookEndpoint;
-import com.example.webhook.platform.queue.DeliveryQueue;
+import com.example.webhook.platform.domain.OutboxMessageType;
 import com.example.webhook.platform.repo.DeliveryTaskRepository;
 import com.example.webhook.platform.repo.EventRecordRepository;
 import com.example.webhook.platform.repo.WebhookEndpointRepository;
@@ -27,19 +27,22 @@ public class EventService {
     private final WebhookEndpointRepository endpointRepository;
     private final DeliveryTaskRepository deliveryRepository;
     private final EndpointMatcher matcher;
-    private final DeliveryQueue deliveryQueue;
+    private final OutboxService outboxService;
     private final EventIdempotencyStore idempotencyStore;
+    private final EventStateMachine eventStateMachine;
 
     public EventService(ObjectMapper objectMapper, EventRecordRepository eventRepository,
                         WebhookEndpointRepository endpointRepository, DeliveryTaskRepository deliveryRepository,
-                        EndpointMatcher matcher, DeliveryQueue deliveryQueue, EventIdempotencyStore idempotencyStore) {
+                        EndpointMatcher matcher, OutboxService outboxService, EventIdempotencyStore idempotencyStore,
+                        EventStateMachine eventStateMachine) {
         this.objectMapper = objectMapper;
         this.eventRepository = eventRepository;
         this.endpointRepository = endpointRepository;
         this.deliveryRepository = deliveryRepository;
         this.matcher = matcher;
-        this.deliveryQueue = deliveryQueue;
+        this.outboxService = outboxService;
         this.idempotencyStore = idempotencyStore;
+        this.eventStateMachine = eventStateMachine;
     }
 
     @Transactional
@@ -69,19 +72,22 @@ public class EventService {
         event.setType(request.type());
         event.setTraceId(RequestContext.traceId());
         event.setPayload(writePayload(request.data()));
-        event.setStatus(EventStatus.DISPATCHING);
+        eventStateMachine.transition(event, EventStatus.DISPATCHING);
         eventRepository.save(event);
 
         List<WebhookEndpoint> endpoints = endpointRepository.findByTenantIdAndActiveTrue(principal.tenantId()).stream()
                 .filter(endpoint -> matcher.supports(endpoint, request.type()))
                 .toList();
+        if (endpoints.isEmpty()) {
+            eventStateMachine.transition(event, EventStatus.COMPLETED);
+        }
         for (WebhookEndpoint endpoint : endpoints) {
             DeliveryTask task = new DeliveryTask();
             task.setEvent(event);
             task.setEndpoint(endpoint);
             task.setNextAttemptAt(Instant.now());
             deliveryRepository.save(task);
-            enqueueAfterCommit(task.getId());
+            outboxService.add(task.getId(), OutboxMessageType.DELIVERY, 0);
         }
         rememberAfterCommit(principal.tenantId(), eventId);
         return new EventSubmitResponse(eventId, endpoints.size(), false);
@@ -94,16 +100,6 @@ public class EventService {
         }
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override public void afterCommit() { idempotencyStore.remember(tenantId, eventId); }
-        });
-    }
-
-    private void enqueueAfterCommit(Long deliveryId) {
-        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            deliveryQueue.enqueue(deliveryId);
-            return;
-        }
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override public void afterCommit() { deliveryQueue.enqueue(deliveryId); }
         });
     }
 
