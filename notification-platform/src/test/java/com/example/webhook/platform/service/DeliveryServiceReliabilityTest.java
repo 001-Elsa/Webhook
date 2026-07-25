@@ -5,7 +5,7 @@ import com.example.webhook.platform.domain.DeliveryTask;
 import com.example.webhook.platform.domain.EventRecord;
 import com.example.webhook.platform.domain.EventStatus;
 import com.example.webhook.platform.domain.WebhookEndpoint;
-import com.example.webhook.platform.queue.DeliveryQueue;
+import com.example.webhook.platform.repo.DeliveryStatusCounts;
 import com.example.webhook.platform.repo.DeliveryAttemptRepository;
 import com.example.webhook.platform.repo.DeliveryTaskRepository;
 import com.example.webhook.platform.repo.EventRecordRepository;
@@ -42,7 +42,6 @@ class DeliveryServiceReliabilityTest {
     @Mock EventRecordRepository eventRepository;
     @Mock SignatureService signatureService;
     @Mock RateLimiter rateLimiter;
-    @Mock DeliveryQueue deliveryQueue;
     @Mock OutboxService outboxService;
     @Mock WebhookSecretCipher secretCipher;
     @Mock TransactionTemplate transactionTemplate;
@@ -55,7 +54,7 @@ class DeliveryServiceReliabilityTest {
     }
 
     @Test
-    void compensationScannerRequeuesDueDatabaseTasks() {
+    void compensationScannerCreatesOneDurableRecoveryOutboxPerDueTask() {
         DeliveryTask first = task(11L);
         DeliveryTask second = task(12L);
         when(deliveryRepository.findByStatusInAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAsc(
@@ -63,8 +62,8 @@ class DeliveryServiceReliabilityTest {
 
         service().recoverDueTasks();
 
-        verify(deliveryQueue).enqueue(11L);
-        verify(deliveryQueue).enqueue(12L);
+        verify(outboxService).addRecoveryIfAbsent(11L, 0);
+        verify(outboxService).addRecoveryIfAbsent(12L, 0);
     }
 
     @Test
@@ -93,6 +92,8 @@ class DeliveryServiceReliabilityTest {
         task.setEvent(event);
         when(deliveryRepository.findByIdAndEventTenantId(21L, "tenant-a")).thenReturn(Optional.of(task));
         when(deliveryRepository.save(task)).thenReturn(task);
+        when(deliveryRepository.countStatusesByEventId(any(), any(), any(), any()))
+                .thenReturn(new DeliveryStatusCounts(1, 0, 0));
 
         TransactionSynchronizationManager.initSynchronization();
         service().retryNow(21L, "tenant-a");
@@ -149,6 +150,47 @@ class DeliveryServiceReliabilityTest {
     }
 
     @Test
+    void permanentHttpFailureDoesNotConsumeRetryBudget() throws Exception {
+        HttpServer server = successfulServer(400);
+        try {
+            DeliveryTask task = deliveryTaskWithEndpoint(45L, server, 0, 5);
+            stubProcessingTransaction(task);
+            when(signatureService.sign(any(), any(), any(), any())).thenReturn("signature");
+            when(secretCipher.decrypt(any())).thenReturn("secret");
+            when(rateLimiter.tryAcquire(any(), anyInt())).thenReturn(true);
+
+            DeliveryService.Outcome outcome = service().processDelivery(45L);
+
+            assertThat(outcome).isEqualTo(DeliveryService.Outcome.DEAD);
+            assertThat(task.getStatus()).isEqualTo(DeliveryStatus.DEAD);
+            verify(outboxService).add(45L, com.example.webhook.platform.domain.OutboxMessageType.DEAD, 1);
+            verify(outboxService, never()).add(45L, com.example.webhook.platform.domain.OutboxMessageType.RETRY, 1);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void retryAfterHeaderTakesPrecedenceForRateLimitResponses() throws Exception {
+        HttpServer server = retryAfterServer(25);
+        try {
+            DeliveryTask task = deliveryTaskWithEndpoint(46L, server, 0, 5);
+            stubProcessingTransaction(task);
+            when(signatureService.sign(any(), any(), any(), any())).thenReturn("signature");
+            when(secretCipher.decrypt(any())).thenReturn("secret");
+            when(rateLimiter.tryAcquire(any(), anyInt())).thenReturn(true);
+
+            DeliveryService.Outcome outcome = service().processDelivery(46L);
+
+            assertThat(outcome).isEqualTo(DeliveryService.Outcome.RETRY);
+            assertThat(task.getNextAttemptAt()).isAfter(Instant.now().plusSeconds(22));
+            assertThat(task.getNextAttemptAt()).isBefore(Instant.now().plusSeconds(28));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void successfulDeliveryPreservesActualHttpStatusAndCompletesEvent() throws Exception {
         HttpServer server = successfulServer(202);
         try {
@@ -170,8 +212,8 @@ class DeliveryServiceReliabilityTest {
 
     private DeliveryService service() {
         return new DeliveryService(deliveryRepository, attemptRepository, eventRepository, signatureService, rateLimiter,
-                deliveryQueue, outboxService, secretCipher, new DeliveryStateMachine(), new EventStateMachine(),
-                RestClient.builder(), new SimpleMeterRegistry(), transactionTemplate, 100);
+                outboxService, secretCipher, new DeliveryStateMachine(), new EventStateMachine(),
+                RestClient.builder(), new SimpleMeterRegistry(), transactionTemplate, 100, 5, 300, 0);
     }
 
     private DeliveryTask task(Long id) {
@@ -190,6 +232,13 @@ class DeliveryServiceReliabilityTest {
         when(deliveryRepository.findWithEventAndEndpointById(task.getId())).thenReturn(Optional.of(task));
         when(deliveryRepository.claimDueTask(eq(task.getId()), any(Collection.class), any(Instant.class), any(), any()))
                 .thenReturn(1);
+        when(deliveryRepository.countStatusesByEventId(any(), any(), any(), any())).thenAnswer(invocation -> {
+            return switch (task.getStatus()) {
+                case PENDING, RETRYING -> new DeliveryStatusCounts(1, 0, 0);
+                case SUCCEEDED -> new DeliveryStatusCounts(0, 1, 0);
+                case DEAD -> new DeliveryStatusCounts(0, 0, 1);
+            };
+        });
     }
 
     private DeliveryTask deliveryTaskWithEndpoint(Long id, HttpServer server, int attemptCount, int maxAttempts) {
@@ -225,6 +274,17 @@ class DeliveryServiceReliabilityTest {
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         server.createContext("/webhook", exchange -> {
             exchange.sendResponseHeaders(status, -1);
+            exchange.close();
+        });
+        server.start();
+        return server;
+    }
+
+    private HttpServer retryAfterServer(long seconds) throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/webhook", exchange -> {
+            exchange.getResponseHeaders().set("Retry-After", String.valueOf(seconds));
+            exchange.sendResponseHeaders(429, -1);
             exchange.close();
         });
         server.start();

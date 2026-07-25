@@ -1,7 +1,6 @@
 package com.example.webhook.platform.service;
 
 import com.example.webhook.platform.domain.*;
-import com.example.webhook.platform.queue.DeliveryQueue;
 import com.example.webhook.platform.repo.DeliveryAttemptRepository;
 import com.example.webhook.platform.repo.DeliveryTaskRepository;
 import com.example.webhook.platform.repo.EventRecordRepository;
@@ -10,6 +9,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -20,8 +20,11 @@ import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestClientResponseException;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 
 @Service
 public class DeliveryService {
@@ -32,7 +35,6 @@ public class DeliveryService {
     private final EventRecordRepository eventRepository;
     private final SignatureService signatureService;
     private final RateLimiter rateLimiter;
-    private final DeliveryQueue deliveryQueue;
     private final OutboxService outboxService;
     private final WebhookSecretCipher secretCipher;
     private final DeliveryStateMachine deliveryStateMachine;
@@ -41,22 +43,27 @@ public class DeliveryService {
     private final MeterRegistry meterRegistry;
     private final TransactionTemplate transactionTemplate;
     private final int recoveryBatchSize;
+    private final long retryBaseDelaySeconds;
+    private final long retryMaxDelaySeconds;
+    private final long retryJitterSeconds;
 
     public DeliveryService(DeliveryTaskRepository deliveryRepository, DeliveryAttemptRepository attemptRepository,
                            EventRecordRepository eventRepository,
-                           SignatureService signatureService, RateLimiter rateLimiter, DeliveryQueue deliveryQueue,
+                           SignatureService signatureService, RateLimiter rateLimiter,
                            OutboxService outboxService,
                            WebhookSecretCipher secretCipher,
                            DeliveryStateMachine deliveryStateMachine, EventStateMachine eventStateMachine,
                            RestClient.Builder restClientBuilder, MeterRegistry meterRegistry,
                            TransactionTemplate transactionTemplate,
-                           @Value("${webhook.queue.recovery-batch-size:100}") int recoveryBatchSize) {
+                           @Value("${webhook.queue.recovery-batch-size:100}") int recoveryBatchSize,
+                           @Value("${webhook.retry.base-delay-seconds:5}") long retryBaseDelaySeconds,
+                           @Value("${webhook.retry.max-delay-seconds:300}") long retryMaxDelaySeconds,
+                           @Value("${webhook.retry.jitter-seconds:5}") long retryJitterSeconds) {
         this.deliveryRepository = deliveryRepository;
         this.attemptRepository = attemptRepository;
         this.eventRepository = eventRepository;
         this.signatureService = signatureService;
         this.rateLimiter = rateLimiter;
-        this.deliveryQueue = deliveryQueue;
         this.outboxService = outboxService;
         this.secretCipher = secretCipher;
         this.deliveryStateMachine = deliveryStateMachine;
@@ -65,16 +72,20 @@ public class DeliveryService {
         this.meterRegistry = meterRegistry;
         this.transactionTemplate = transactionTemplate;
         this.recoveryBatchSize = recoveryBatchSize;
+        this.retryBaseDelaySeconds = retryBaseDelaySeconds;
+        this.retryMaxDelaySeconds = retryMaxDelaySeconds;
+        this.retryJitterSeconds = retryJitterSeconds;
     }
 
-    /** Compensation scanner: the database is the source of truth when publish confirms fail or MQ restarts. */
+    /** Compensation scanner only creates idempotent outbox records; it never writes directly to RabbitMQ. */
     @Scheduled(fixedDelayString = "${webhook.dispatcher.fixed-delay-ms:5000}")
     public void recoverDueTasks() {
         deliveryRepository.findByStatusInAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAsc(
                 List.of(DeliveryStatus.PENDING, DeliveryStatus.RETRYING), Instant.now(),
                 PageRequest.of(0, recoveryBatchSize)).forEach(task -> {
-                    deliveryQueue.enqueue(task.getId());
-                    meterRegistry.counter("webhook.delivery.recovered").increment();
+                    if (outboxService.addRecoveryIfAbsent(task.getId(), task.getAttemptCount())) {
+                        meterRegistry.counter("webhook.delivery.recovered").increment();
+                    }
                 });
     }
 
@@ -184,8 +195,12 @@ public class DeliveryService {
             result.statusCode = ex.getStatusCode().value();
             result.responseBody = truncate(ex.getResponseBodyAsString(), 2000);
             result.errorMessage = truncate(ex.getMessage(), 1000);
-            if (attemptNo >= endpoint.getMaxAttempts()) outcome = Outcome.DEAD;
-            else result.nextAttemptAt = Instant.now().plusSeconds(retryDelaySeconds(attemptNo));
+            if (isRetryable(ex.getStatusCode().value()) && attemptNo < endpoint.getMaxAttempts()) {
+                result.nextAttemptAt = nextRetryAt(attemptNo, ex.getResponseHeaders());
+                outcome = Outcome.RETRY;
+            } else {
+                outcome = Outcome.DEAD;
+            }
             meterRegistry.counter("webhook.delivery.failure").increment();
         } catch (RestClientException ex) {
             result.success = false;
@@ -247,10 +262,11 @@ public class DeliveryService {
     }
 
     private void refreshEventStatus(EventRecord event) {
-        long pending = deliveryRepository.countByEventIdAndStatus(event.getId(), DeliveryStatus.PENDING)
-                + deliveryRepository.countByEventIdAndStatus(event.getId(), DeliveryStatus.RETRYING);
-        long succeeded = deliveryRepository.countByEventIdAndStatus(event.getId(), DeliveryStatus.SUCCEEDED);
-        long dead = deliveryRepository.countByEventIdAndStatus(event.getId(), DeliveryStatus.DEAD);
+        var counts = deliveryRepository.countStatusesByEventId(event.getId(),
+                List.of(DeliveryStatus.PENDING, DeliveryStatus.RETRYING), DeliveryStatus.SUCCEEDED, DeliveryStatus.DEAD);
+        long pending = counts.pending();
+        long succeeded = counts.succeeded();
+        long dead = counts.dead();
         if (pending > 0) eventStateMachine.transition(event, EventStatus.DISPATCHING);
         else if (dead == 0) eventStateMachine.transition(event, EventStatus.COMPLETED);
         else if (succeeded == 0) eventStateMachine.transition(event, EventStatus.DEAD);
@@ -258,7 +274,37 @@ public class DeliveryService {
         eventRepository.save(event);
     }
 
-    private long retryDelaySeconds(int attemptNo) { return attemptNo <= 1 ? 5 : attemptNo <= 3 ? 30 : 120; }
+    private boolean isRetryable(int statusCode) {
+        return statusCode == 408 || statusCode == 425 || statusCode == 429
+                || statusCode == 500 || statusCode == 502 || statusCode == 503 || statusCode == 504;
+    }
+
+    private Instant nextRetryAt(int attemptNo, HttpHeaders headers) {
+        Long retryAfter = retryAfterSeconds(headers);
+        return Instant.now().plusSeconds(retryAfter == null ? retryDelaySeconds(attemptNo) : retryAfter);
+    }
+
+    private Long retryAfterSeconds(HttpHeaders headers) {
+        if (headers == null) return null;
+        String value = headers.getFirst(HttpHeaders.RETRY_AFTER);
+        if (value == null || value.isBlank()) return null;
+        try { return Math.min(retryMaxDelaySeconds, Math.max(0, Long.parseLong(value.trim()))); }
+        catch (NumberFormatException ignored) {
+            try {
+                long seconds = Duration.between(Instant.now(), ZonedDateTime.parse(value, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant()).toSeconds();
+                return Math.min(retryMaxDelaySeconds, Math.max(0, seconds));
+            } catch (RuntimeException invalidDate) { return null; }
+        }
+    }
+
+    private long retryDelaySeconds(int attemptNo) {
+        int exponent = Math.min(Math.max(attemptNo - 1, 0), 30);
+        long exponential = retryBaseDelaySeconds > Long.MAX_VALUE >> exponent ? Long.MAX_VALUE
+                : retryBaseDelaySeconds << exponent;
+        long bounded = Math.min(retryMaxDelaySeconds, exponential);
+        long jitter = retryJitterSeconds <= 0 ? 0 : ThreadLocalRandom.current().nextLong(retryJitterSeconds + 1);
+        return Math.min(retryMaxDelaySeconds, bounded + jitter);
+    }
     private void unlock(DeliveryTask task) { task.setLockedBy(null); task.setLockedUntil(null); }
     private String truncate(String value, int max) { return value == null || value.length() <= max ? value : value.substring(0, max); }
 

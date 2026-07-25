@@ -74,6 +74,8 @@ services:
       WEBHOOK_DEMO_ADMIN_API_KEY: ${WEBHOOK_DEMO_ADMIN_API_KEY:-}
       WEBHOOK_DEMO_PRODUCER_API_KEY: ${WEBHOOK_DEMO_PRODUCER_API_KEY:-}
       WEBHOOK_DEMO_RECEIVER_SECRET: ${WEBHOOK_DEMO_RECEIVER_SECRET:-}
+      # Prometheus is on the private Compose network; this port is intentionally not published to the host.
+      MANAGEMENT_ADDRESS: 0.0.0.0
     ports: ["8080:8080"]
     depends_on:
       mysql: { condition: service_healthy }
@@ -81,7 +83,7 @@ services:
       rabbitmq: { condition: service_healthy }
       receiver-mock: { condition: service_healthy }
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health | grep -q UP"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8083/actuator/health | grep -q UP"]
       interval: 10s
       timeout: 5s
       retries: 30

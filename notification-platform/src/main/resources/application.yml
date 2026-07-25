@@ -1,6 +1,15 @@
 server:
   port: 8080
 
+management:
+  server:
+    port: ${MANAGEMENT_PORT:8083}
+    address: ${MANAGEMENT_ADDRESS:127.0.0.1}
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+
 logging:
   pattern:
     level: "%5p [traceId=%X{traceId:-}]"
@@ -40,15 +49,12 @@ spring:
       repositories:
         enabled: false
 
-management:
-  endpoints:
-    web:
-      exposure:
-        include: health,info,metrics,prometheus
-
 springdoc:
+  api-docs:
+    enabled: ${SWAGGER_ENABLED:false}
   swagger-ui:
     path: /swagger-ui.html
+    enabled: ${SWAGGER_ENABLED:false}
 
 webhook:
   demo:
@@ -72,6 +78,10 @@ webhook:
     batch-size: ${WEBHOOK_EVENT_RECONCILER_BATCH_SIZE:200}
   queue:
     recovery-batch-size: 100
+  retry:
+    base-delay-seconds: ${WEBHOOK_RETRY_BASE_DELAY_SECONDS:5}
+    max-delay-seconds: ${WEBHOOK_RETRY_MAX_DELAY_SECONDS:300}
+    jitter-seconds: ${WEBHOOK_RETRY_JITTER_SECONDS:5}
   retention:
     delivery-attempt-days: ${DELIVERY_ATTEMPT_RETENTION_DAYS:30}
     outbox-days: ${OUTBOX_RETENTION_DAYS:7}

@@ -16,6 +16,6 @@ foreach ($service in $services) {
     Wait-Healthy $service
 }
 
-$health = Invoke-RestMethod http://localhost:8080/actuator/health
+$health = Invoke-RestMethod http://localhost:8083/actuator/health
 if ($health.status -ne "UP") { throw "EventRelay health check failed" }
 Write-Host "Fault drill completed; inspect Prometheus alerts and outbox backlog before declaring success."

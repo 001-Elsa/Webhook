@@ -38,10 +38,11 @@ public class EventStatusReconciler {
     }
 
     private void reconcileOne(EventRecord event) {
-        long pending = deliveries.countByEventIdAndStatus(event.getId(), DeliveryStatus.PENDING)
-                + deliveries.countByEventIdAndStatus(event.getId(), DeliveryStatus.RETRYING);
-        long succeeded = deliveries.countByEventIdAndStatus(event.getId(), DeliveryStatus.SUCCEEDED);
-        long dead = deliveries.countByEventIdAndStatus(event.getId(), DeliveryStatus.DEAD);
+        var counts = deliveries.countStatusesByEventId(event.getId(),
+                List.of(DeliveryStatus.PENDING, DeliveryStatus.RETRYING), DeliveryStatus.SUCCEEDED, DeliveryStatus.DEAD);
+        long pending = counts.pending();
+        long succeeded = counts.succeeded();
+        long dead = counts.dead();
         EventStatus target = pending > 0 ? EventStatus.DISPATCHING
                 : dead == 0 ? EventStatus.COMPLETED
                 : succeeded == 0 ? EventStatus.DEAD : EventStatus.PARTIALLY_FAILED;

@@ -23,8 +23,10 @@ import com.zaxxer.hikari.HikariDataSource;
 import java.time.Duration;
 import com.example.webhook.platform.domain.*;
 import com.example.webhook.platform.repo.*;
+import com.example.webhook.platform.service.OutboxService;
 import org.springframework.transaction.support.TransactionTemplate;
 import java.time.Instant;
+import java.sql.DriverManager;
 
 @Testcontainers(disabledWithoutDocker = true)
 @SpringBootTest(properties = {"webhook.dispatcher.fixed-delay-ms=600000",
@@ -61,6 +63,7 @@ class InfrastructureIntegrationTest {
     @Autowired DeliveryTaskRepository deliveries;
     @Autowired OutboxMessageRepository outbox;
     @Autowired TransactionTemplate transactions;
+    @Autowired OutboxService outboxService;
 
     @Test
     void allProductionInfrastructureIsReachable() throws Exception {
@@ -116,18 +119,63 @@ class InfrastructureIntegrationTest {
     }
 
     @Test
+    void recoveryOutboxIsIdempotentAndOnlyOneWorkerCanClaimTheDueDelivery() {
+        Long deliveryId = transactions.execute(status -> {
+            WebhookEndpoint endpoint = new WebhookEndpoint();
+            endpoint.setTenantId("recovery-tenant");
+            endpoint.setName("recovery-endpoint-" + System.nanoTime());
+            endpoint.setUrl("https://93.184.216.34/webhook");
+            endpoint.setEncryptedSecret("v1:test-value-not-read");
+            endpoint.setEventTypes("*");
+            endpoints.save(endpoint);
+
+            EventRecord event = new EventRecord();
+            event.setTenantId("recovery-tenant");
+            event.setAppId("recovery-app");
+            event.setEventId("recovery-" + System.nanoTime());
+            event.setType("recovery.test");
+            event.setPayload("{}");
+            event.setStatus(EventStatus.DISPATCHING);
+            events.save(event);
+
+            DeliveryTask delivery = new DeliveryTask();
+            delivery.setEvent(event);
+            delivery.setEndpoint(endpoint);
+            delivery.setNextAttemptAt(Instant.now().minusSeconds(1));
+            return deliveries.save(delivery).getId();
+        });
+
+        assertThat(outboxService.addRecoveryIfAbsent(deliveryId, 0)).isTrue();
+        assertThat(outboxService.addRecoveryIfAbsent(deliveryId, 0)).isFalse();
+
+        Instant now = Instant.now();
+        int firstClaim = transactions.execute(status -> deliveries.claimDueTask(deliveryId,
+                java.util.List.of(DeliveryStatus.PENDING, DeliveryStatus.RETRYING), now, "worker-a", now.plusSeconds(60)));
+        int secondClaim = transactions.execute(status -> deliveries.claimDueTask(deliveryId,
+                java.util.List.of(DeliveryStatus.PENDING, DeliveryStatus.RETRYING), now, "worker-b", now.plusSeconds(60)));
+
+        assertThat(firstClaim).isEqualTo(1);
+        assertThat(secondClaim).isZero();
+    }
+
+    @Test
     @Tag("fault-injection")
     void clientsRecoverAfterInfrastructureContainerRestarts() {
         restart(MYSQL);
+        Awaitility.await().ignoreExceptions().atMost(Duration.ofSeconds(90)).untilAsserted(() -> {
+            try (var connection = DriverManager.getConnection(MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword())) {
+                assertThat(connection.isValid(2)).isTrue();
+            }
+        });
         evictDatabaseConnections();
-        Awaitility.await().atMost(Duration.ofSeconds(90)).untilAsserted(() -> {
+        Awaitility.await().ignoreExceptions().atMost(Duration.ofSeconds(90)).untilAsserted(() -> {
             try (var connection = dataSource.getConnection()) {
                 assertThat(connection.isValid(2)).isTrue();
             }
         });
 
         restart(REDIS);
-        Awaitility.await().atMost(Duration.ofSeconds(90)).untilAsserted(() -> {
+        Awaitility.await().ignoreExceptions().atMost(Duration.ofSeconds(90)).untilAsserted(() -> {
             redis.opsForValue().set("integration:redis-restarted", "true");
             assertThat(redis.opsForValue().get("integration:redis-restarted")).isEqualTo("true");
         });
@@ -136,7 +184,7 @@ class InfrastructureIntegrationTest {
         if (rabbitTemplate.getConnectionFactory() instanceof CachingConnectionFactory caching) {
             caching.resetConnection();
         }
-        Awaitility.await().atMost(Duration.ofSeconds(90)).untilAsserted(() ->
+        Awaitility.await().ignoreExceptions().atMost(Duration.ofSeconds(90)).untilAsserted(() ->
                 assertThat(rabbitTemplate.getConnectionFactory().createConnection().isOpen()).isTrue());
     }
 

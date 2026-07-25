@@ -14,3 +14,4 @@ jobs:
           cache: maven
       - run: mvn -B verify
       - run: docker compose config -q
+      - run: docker build --build-arg MODULE=notification-platform -t eventrelay-platform-ci .

@@ -47,7 +47,7 @@ public class OutboxPublisher {
         if (message == null) return;
         try {
             switch (message.getMessageType()) {
-                case DELIVERY -> queue.enqueue(message.getDeliveryId());
+                case DELIVERY, RECOVERY -> queue.enqueue(message.getDeliveryId());
                 case RETRY -> queue.enqueueRetry(message.getDeliveryId(), message.getAttemptNo());
                 case DEAD -> queue.enqueueDead(message.getDeliveryId());
             }

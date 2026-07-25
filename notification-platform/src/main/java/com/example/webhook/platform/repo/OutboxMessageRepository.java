@@ -25,6 +25,20 @@ public interface OutboxMessageRepository extends JpaRepository<OutboxMessage, Lo
 
     long countByStatus(OutboxStatus status);
 
+    /**
+     * MySQL INSERT IGNORE makes recovery enqueue idempotent across scanner instances.
+     * The partial-equivalent recovery unique key is introduced by V5.
+     */
+    @Modifying
+    @Query(value = """
+            insert ignore into outbox_messages
+                (delivery_id, message_type, attempt_no, status, publish_attempts, next_attempt_at, created_at, updated_at)
+            values (:deliveryId, :messageType, :attemptNo, 'PENDING', 0, current_timestamp(6), current_timestamp(6), current_timestamp(6))
+            """, nativeQuery = true)
+    int addRecoveryIfAbsent(@Param("deliveryId") Long deliveryId,
+                            @Param("messageType") String messageType,
+                            @Param("attemptNo") int attemptNo);
+
     @Modifying
     @Query("delete from OutboxMessage o where o.status = :status and o.updatedAt < :cutoff")
     int deletePublishedBefore(@Param("status") OutboxStatus status, @Param("cutoff") Instant cutoff);

@@ -34,6 +34,19 @@ public interface DeliveryTaskRepository extends JpaRepository<DeliveryTask, Long
     long countByEventTenantId(String tenantId);
     long countByEventIdAndStatus(Long eventId, DeliveryStatus status);
 
+    @Query("""
+            select new com.example.webhook.platform.repo.DeliveryStatusCounts(
+                sum(case when d.status in :activeStatuses then 1L else 0L end),
+                sum(case when d.status = :succeeded then 1L else 0L end),
+                sum(case when d.status = :dead then 1L else 0L end))
+              from DeliveryTask d
+             where d.event.id = :eventId
+            """)
+    DeliveryStatusCounts countStatusesByEventId(@Param("eventId") Long eventId,
+                                                  @Param("activeStatuses") Collection<DeliveryStatus> activeStatuses,
+                                                  @Param("succeeded") DeliveryStatus succeeded,
+                                                  @Param("dead") DeliveryStatus dead);
+
     long countByEventTenantIdAndEventEventId(String tenantId, String eventId);
 
     @Modifying
