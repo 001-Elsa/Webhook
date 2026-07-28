@@ -7,10 +7,12 @@ import org.slf4j.LoggerFactory;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.stereotype.Component;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import java.io.IOException;
 import org.springframework.dao.DataAccessException;
 
 @Component
+@ConditionalOnProperty(name = "eventrelay.roles.worker", havingValue = "true", matchIfMissing = true)
 public class DeliveryMessageConsumer {
     private static final Logger log = LoggerFactory.getLogger(DeliveryMessageConsumer.class);
     private final DeliveryService deliveryService;

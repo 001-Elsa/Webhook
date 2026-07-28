@@ -13,5 +13,8 @@ FROM eclipse-temurin:17-jre
 WORKDIR /app
 ARG MODULE
 COPY --from=build /workspace/${MODULE}/target/*.jar app.jar
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
 USER 10001
 ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "-jar", "/app/app.jar"]

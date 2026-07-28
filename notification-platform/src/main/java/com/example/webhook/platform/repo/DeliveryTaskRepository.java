@@ -27,10 +27,14 @@ public interface DeliveryTaskRepository extends JpaRepository<DeliveryTask, Long
 
     @EntityGraph(attributePaths = {"event", "endpoint"})
     List<DeliveryTask> findTop100ByEventTenantIdAndStatusOrderByUpdatedAtDesc(String tenantId, DeliveryStatus status);
+    @EntityGraph(attributePaths = {"event", "endpoint"})
+    List<DeliveryTask> findByEventTenantIdAndStatusOrderByIdAsc(
+            String tenantId, DeliveryStatus status, Pageable pageable);
 
     Optional<DeliveryTask> findByIdAndEventTenantId(Long id, String tenantId);
 
     long countByEventTenantIdAndStatus(String tenantId, DeliveryStatus status);
+    long countByEventTenantIdAndStatusIn(String tenantId, Collection<DeliveryStatus> statuses);
     long countByEventTenantId(String tenantId);
     long countByEventIdAndStatus(Long eventId, DeliveryStatus status);
 
@@ -63,4 +67,19 @@ public interface DeliveryTaskRepository extends JpaRepository<DeliveryTask, Long
                      @Param("now") Instant now,
                      @Param("owner") String owner,
                      @Param("lockedUntil") Instant lockedUntil);
+
+    @EntityGraph(attributePaths = {"event", "endpoint"})
+    List<DeliveryTask> findByEventTenantIdAndStatusInAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAsc(
+            String tenantId, Collection<DeliveryStatus> statuses, Instant now, Pageable pageable);
+
+    @Query(value = """
+            select e.tenant_id
+              from delivery_tasks d
+              join event_records e on e.id = d.event_id
+             where d.status in ('PENDING','RETRYING') and d.next_attempt_at <= :now
+             group by e.tenant_id
+             order by min(d.next_attempt_at)
+             limit :limit
+            """, nativeQuery = true)
+    List<String> findTenantsWithDueTasks(@Param("now") Instant now, @Param("limit") int limit);
 }

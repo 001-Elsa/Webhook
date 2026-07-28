@@ -1,0 +1,15 @@
+{{- range $name, $role := .Values.roles }}
+{{- if gt (int $role.replicas) 1 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: eventrelay-{{ $name }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: eventrelay
+      eventrelay.io/role: {{ $name }}
+{{- end }}
+{{- end }}

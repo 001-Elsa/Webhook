@@ -1,0 +1,56 @@
+image:
+  repository: ghcr.io/your-org/eventrelay
+  tag: ""
+  pullPolicy: IfNotPresent
+
+roles:
+  api:
+    replicas: 2
+    port: 8080
+    autoscaling: { enabled: true, minReplicas: 2, maxReplicas: 10, cpu: 70 }
+    resources:
+      requests: { cpu: 250m, memory: 384Mi }
+      limits: { cpu: "1", memory: 768Mi }
+  publisher:
+    replicas: 2
+    port: 8080
+    autoscaling: { enabled: true, minReplicas: 2, maxReplicas: 10, cpu: 70 }
+    resources:
+      requests: { cpu: 250m, memory: 384Mi }
+      limits: { cpu: "1", memory: 768Mi }
+  worker:
+    replicas: 2
+    port: 8080
+    autoscaling: { enabled: true, minReplicas: 2, maxReplicas: 20, cpu: 65 }
+    resources:
+      requests: { cpu: 500m, memory: 512Mi }
+      limits: { cpu: "2", memory: 1Gi }
+  scheduler:
+    replicas: 1
+    port: 8080
+    autoscaling: { enabled: false }
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { cpu: 500m, memory: 512Mi }
+
+config:
+  mysqlUrl: jdbc:mysql://mysql:3306/event_relay
+  redisHost: redis
+  rabbitmqHost: rabbitmq
+  otlpEndpoint: http://otel-collector:4318/v1/traces
+
+secrets:
+  existingSecret: eventrelay-secrets
+
+networkPolicy:
+  enabled: true
+  receiverCidrs:
+    - 0.0.0.0/0
+
+migration:
+  enabled: true
+  command: ["java", "-jar", "/app/app.jar", "--spring.main.web-application-type=none",
+            "--spring.task.scheduling.enabled=false",
+            "--spring.rabbitmq.listener.simple.auto-startup=false",
+            "--eventrelay.roles.api=false", "--eventrelay.roles.publisher=false",
+            "--eventrelay.roles.worker=false", "--eventrelay.roles.scheduler=false"]

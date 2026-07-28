@@ -7,28 +7,28 @@ import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageProperties;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
+import org.springframework.amqp.core.MessagePostProcessor;
 
 import static org.mockito.Mockito.*;
 import org.springframework.dao.DataAccessResourceFailureException;
 
 class RabbitQueueReliabilityTest {
     @Test
-    void retryPublishUsesConfiguredTtlRoutes() {
+    void deliveryPublishUsesCorrelatedConfirm() {
         RabbitTemplate rabbitTemplate = mock(RabbitTemplate.class);
         doAnswer(invocation -> {
-            CorrelationData correlation = invocation.getArgument(3);
+            CorrelationData correlation = invocation.getArgument(4);
             correlation.getFuture().complete(new CorrelationData.Confirm(true, null));
             return null;
-        }).when(rabbitTemplate).convertAndSend(anyString(), anyString(), any(Long.class), any(CorrelationData.class));
+        }).when(rabbitTemplate).convertAndSend(anyString(), anyString(), any(Long.class),
+                any(MessagePostProcessor.class), any(CorrelationData.class));
         RabbitDeliveryQueue queue = new RabbitDeliveryQueue(rabbitTemplate);
 
-        queue.enqueueRetry(101L, 1);
-        queue.enqueueRetry(102L, 2);
-        queue.enqueueRetry(103L, 4);
+        queue.enqueue(101L);
 
-        verify(rabbitTemplate).convertAndSend(eq(RabbitTopology.RETRY_EXCHANGE), eq("retry.5s"), eq(101L), any(CorrelationData.class));
-        verify(rabbitTemplate).convertAndSend(eq(RabbitTopology.RETRY_EXCHANGE), eq("retry.30s"), eq(102L), any(CorrelationData.class));
-        verify(rabbitTemplate).convertAndSend(eq(RabbitTopology.RETRY_EXCHANGE), eq("retry.120s"), eq(103L), any(CorrelationData.class));
+        verify(rabbitTemplate).convertAndSend(eq(RabbitTopology.DELIVERY_EXCHANGE),
+                eq(RabbitTopology.DELIVERY_KEY), eq(101L), any(MessagePostProcessor.class),
+                any(CorrelationData.class));
     }
 
     @Test

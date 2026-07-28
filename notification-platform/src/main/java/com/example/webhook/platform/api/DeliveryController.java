@@ -6,6 +6,8 @@ import com.example.webhook.platform.domain.DeliveryTask;
 import com.example.webhook.platform.repo.DeliveryAttemptRepository;
 import com.example.webhook.platform.repo.DeliveryTaskRepository;
 import com.example.webhook.platform.service.DeliveryService;
+import com.example.webhook.platform.service.ReplayJobService;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.example.webhook.platform.security.RequestContext;
 import org.springframework.web.bind.annotation.*;
 import java.util.List;
@@ -17,12 +19,20 @@ public class DeliveryController {
     private final DeliveryTaskRepository deliveryRepository;
     private final DeliveryAttemptRepository attemptRepository;
     private final DeliveryService deliveryService;
+    private final ReplayJobService replayJobs;
 
     public DeliveryController(DeliveryTaskRepository deliveryRepository, DeliveryAttemptRepository attemptRepository,
                               DeliveryService deliveryService) {
+        this(deliveryRepository, attemptRepository, deliveryService, null);
+    }
+
+    @Autowired
+    public DeliveryController(DeliveryTaskRepository deliveryRepository, DeliveryAttemptRepository attemptRepository,
+                              DeliveryService deliveryService, ReplayJobService replayJobs) {
         this.deliveryRepository = deliveryRepository;
         this.attemptRepository = attemptRepository;
         this.deliveryService = deliveryService;
+        this.replayJobs = replayJobs;
     }
 
     @GetMapping
@@ -58,8 +68,10 @@ public class DeliveryController {
 
     @PostMapping("/dead-letter/replay")
     public Map<String, Object> replayDeadLetters() {
-        int count = deliveryService.retryDeadTasks(tenantId());
-        return Map.of("replayed", count);
+        if (replayJobs == null) throw new IllegalStateException("Replay job service is unavailable");
+        var job = replayJobs.create(false, 100);
+        return Map.of("jobId", job.getId(), "status", job.getStatus(),
+                "message", "Asynchronous replay job created; approval may be required");
     }
 
     private String tenantId() {

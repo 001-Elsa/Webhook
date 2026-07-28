@@ -68,7 +68,7 @@ class EventServiceReliabilityTest {
         WebhookEndpoint endpoint = endpoint();
         when(eventRepository.findByTenantIdAndEventId("tenant-a", "evt-2")).thenReturn(Optional.empty());
         when(endpointRepository.findByTenantIdAndActiveTrue("tenant-a")).thenReturn(List.of(endpoint));
-        when(matcher.supports(endpoint, "order.created")).thenReturn(true);
+        when(matcher.supports(eq(endpoint), eq("order.created"), anyMap())).thenReturn(true);
         when(deliveryRepository.save(any(DeliveryTask.class))).thenAnswer(invocation -> {
             DeliveryTask task = invocation.getArgument(0);
             ReflectionTestUtils.setField(task, "id", 42L);

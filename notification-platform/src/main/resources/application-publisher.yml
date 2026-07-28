@@ -1,0 +1,7 @@
+eventrelay.roles:
+  api: false
+  publisher: true
+  worker: false
+  scheduler: false
+server.port: ${SERVER_PORT:8084}
+management.server.port: ${MANAGEMENT_PORT:8085}

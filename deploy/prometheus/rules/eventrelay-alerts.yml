@@ -30,3 +30,41 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: Webhook delivery p99 latency exceeds 3 seconds
+      # 99.9% delivery success SLO: 14.4x burn for 1h/5m catches fast outages.
+      - alert: EventRelayDeliverySloFastBurn
+        expr: |
+          (
+            sum(rate(webhook_delivery_failure_total[5m]))
+            / clamp_min(sum(rate(webhook_delivery_failure_total[5m])) + sum(rate(webhook_delivery_success_total[5m])), 0.001)
+          ) > (14.4 * 0.001)
+          and
+          (
+            sum(rate(webhook_delivery_failure_total[1h]))
+            / clamp_min(sum(rate(webhook_delivery_failure_total[1h])) + sum(rate(webhook_delivery_success_total[1h])), 0.001)
+          ) > (14.4 * 0.001)
+        for: 2m
+        labels: { severity: critical, slo: delivery-success }
+        annotations:
+          summary: Delivery success SLO error budget is burning rapidly
+      # 6x burn for 6h/30m catches slower degradation without paging on a blip.
+      - alert: EventRelayDeliverySloSlowBurn
+        expr: |
+          (
+            sum(rate(webhook_delivery_failure_total[30m]))
+            / clamp_min(sum(rate(webhook_delivery_failure_total[30m])) + sum(rate(webhook_delivery_success_total[30m])), 0.001)
+          ) > (6 * 0.001)
+          and
+          (
+            sum(rate(webhook_delivery_failure_total[6h]))
+            / clamp_min(sum(rate(webhook_delivery_failure_total[6h])) + sum(rate(webhook_delivery_success_total[6h])), 0.001)
+          ) > (6 * 0.001)
+        for: 15m
+        labels: { severity: warning, slo: delivery-success }
+        annotations:
+          summary: Delivery success SLO error budget is burning steadily
+      - alert: EventRelayOldestOutboxTooOld
+        expr: webhook_outbox_oldest_age_seconds > 60
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: Oldest pending outbox message is over one minute old

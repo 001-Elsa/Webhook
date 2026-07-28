@@ -7,11 +7,11 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
 
-public record EventResponse(Long id, String eventId, String type, String traceId, JsonNode data,
+public record EventResponse(Long id, String eventId, String type, String schemaVersion, String traceId, JsonNode data,
                             EventStatus status, Instant createdAt) {
     public static EventResponse from(EventRecord event, ObjectMapper objectMapper) {
         try {
-            return new EventResponse(event.getId(), event.getEventId(), event.getType(), event.getTraceId(),
+            return new EventResponse(event.getId(), event.getEventId(), event.getType(), event.getSchemaVersion(), event.getTraceId(),
                     objectMapper.readTree(event.getPayload()), event.getStatus(), event.getCreatedAt());
         } catch (JsonProcessingException ex) {
             throw new IllegalStateException("Stored event payload is invalid JSON", ex);

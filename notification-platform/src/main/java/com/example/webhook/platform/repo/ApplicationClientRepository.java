@@ -6,4 +6,5 @@ import java.util.Optional;
 
 public interface ApplicationClientRepository extends JpaRepository<ApplicationClient, Long> {
     Optional<ApplicationClient> findByAppIdAndActiveTrue(String appId);
+    Optional<ApplicationClient> findByAppIdAndTenantIdAndActiveTrue(String appId, String tenantId);
 }

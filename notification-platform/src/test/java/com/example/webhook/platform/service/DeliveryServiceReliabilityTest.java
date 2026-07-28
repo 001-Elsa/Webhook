@@ -120,7 +120,9 @@ class DeliveryServiceReliabilityTest {
             assertThat(task.getNextAttemptAt()).isAfter(Instant.now().plusSeconds(3));
             assertThat(task.getNextAttemptAt()).isBefore(Instant.now().plusSeconds(8));
             verify(attemptRepository).save(any());
-            verify(outboxService).add(31L, com.example.webhook.platform.domain.OutboxMessageType.RETRY, 1);
+            verify(outboxService, never()).add(eq(31L),
+                    eq(com.example.webhook.platform.domain.OutboxMessageType.RETRY), eq(1));
+            verify(outboxService, never()).addScheduled(anyLong(), any(), anyInt(), any());
         } finally {
             server.stop(0);
         }

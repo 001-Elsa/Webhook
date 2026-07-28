@@ -23,6 +23,8 @@ public class EventRecord {
     @Lob
     @Column(nullable = false, columnDefinition = "LONGTEXT")
     private String payload;
+    @Column(nullable = false, length = 40)
+    private String schemaVersion = "1";
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 30)
     private EventStatus status = EventStatus.RECEIVED;
@@ -42,6 +44,8 @@ public class EventRecord {
     public void setTraceId(String traceId) { this.traceId = traceId; }
     public String getPayload() { return payload; }
     public void setPayload(String payload) { this.payload = payload; }
+    public String getSchemaVersion() { return schemaVersion; }
+    public void setSchemaVersion(String schemaVersion) { this.schemaVersion = schemaVersion; }
     public EventStatus getStatus() { return status; }
     public void setStatus(EventStatus status) { this.status = status; }
     public Instant getCreatedAt() { return createdAt; }

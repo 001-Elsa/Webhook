@@ -13,6 +13,7 @@ import com.example.webhook.platform.repo.WebhookEndpointRepository;
 import com.example.webhook.platform.security.RequestContext;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -30,11 +31,21 @@ public class EventService {
     private final OutboxService outboxService;
     private final EventIdempotencyStore idempotencyStore;
     private final EventStateMachine eventStateMachine;
+    private final TenantQuotaService quotaService;
 
     public EventService(ObjectMapper objectMapper, EventRecordRepository eventRepository,
                         WebhookEndpointRepository endpointRepository, DeliveryTaskRepository deliveryRepository,
                         EndpointMatcher matcher, OutboxService outboxService, EventIdempotencyStore idempotencyStore,
                         EventStateMachine eventStateMachine) {
+        this(objectMapper, eventRepository, endpointRepository, deliveryRepository, matcher, outboxService,
+                idempotencyStore, eventStateMachine, null);
+    }
+
+    @Autowired
+    public EventService(ObjectMapper objectMapper, EventRecordRepository eventRepository,
+                        WebhookEndpointRepository endpointRepository, DeliveryTaskRepository deliveryRepository,
+                        EndpointMatcher matcher, OutboxService outboxService, EventIdempotencyStore idempotencyStore,
+                        EventStateMachine eventStateMachine, TenantQuotaService quotaService) {
         this.objectMapper = objectMapper;
         this.eventRepository = eventRepository;
         this.endpointRepository = endpointRepository;
@@ -43,6 +54,7 @@ public class EventService {
         this.outboxService = outboxService;
         this.idempotencyStore = idempotencyStore;
         this.eventStateMachine = eventStateMachine;
+        this.quotaService = quotaService;
     }
 
     @Transactional
@@ -65,19 +77,28 @@ public class EventService {
             return new EventSubmitResponse(eventId, count, true);
         }
 
+        List<WebhookEndpoint> endpoints = endpointRepository.findByTenantIdAndActiveTrue(principal.tenantId()).stream()
+                .filter(endpoint -> matcher.supports(endpoint, request.type(),
+                        request.data() == null ? java.util.Map.of() : request.data()))
+                .toList();
+        String payload = writePayload(request.data());
+        if (quotaService != null) {
+            quotaService.reserveIngress(principal.tenantId(), endpoints.size(),
+                    payload.getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+        }
+
         EventRecord event = new EventRecord();
         event.setTenantId(principal.tenantId());
         event.setAppId(principal.appId());
         event.setEventId(eventId);
         event.setType(request.type());
         event.setTraceId(RequestContext.traceId());
-        event.setPayload(writePayload(request.data()));
+        event.setPayload(payload);
+        event.setSchemaVersion(request.schemaVersion() == null || request.schemaVersion().isBlank()
+                ? "1" : request.schemaVersion());
         eventStateMachine.transition(event, EventStatus.DISPATCHING);
         eventRepository.save(event);
 
-        List<WebhookEndpoint> endpoints = endpointRepository.findByTenantIdAndActiveTrue(principal.tenantId()).stream()
-                .filter(endpoint -> matcher.supports(endpoint, request.type()))
-                .toList();
         if (endpoints.isEmpty()) {
             eventStateMachine.transition(event, EventStatus.COMPLETED);
         }

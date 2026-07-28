@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: eventrelay-api
+  labels:
+    {{- include "eventrelay.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: eventrelay
+    eventrelay.io/role: api
+  ports:
+    - { name: http, port: 80, targetPort: http }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: eventrelay-metrics
+  labels:
+    {{- include "eventrelay.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: eventrelay
+  ports:
+    - { name: management, port: 8083, targetPort: management }

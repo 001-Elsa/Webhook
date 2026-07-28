@@ -33,9 +33,11 @@ public class DemoDataInitializer {
                 return;
             }
             WebhookEndpoint endpoint = new WebhookEndpoint();
+            endpoint.setTenantId("demo-tenant");
             endpoint.setName("Demo merchant receiver");
             endpoint.setUrl(receiverUrl);
             endpoint.setEncryptedSecret(secretCipher.encrypt(receiverSecret));
+            endpoint.setKeyVersion(secretCipher.activeVersion());
             endpoint.setEventTypes("order.created,order.paid,order.cancelled,order.shipped");
             endpoint.setMaxAttempts(5);
             endpoint.setRateLimitPerMinute(60);

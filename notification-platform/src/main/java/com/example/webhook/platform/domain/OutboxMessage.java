@@ -25,6 +25,10 @@ public class OutboxMessage {
     private Instant lockedUntil;
     @Column(length = 1000)
     private String lastError;
+    @Column(nullable = false, length = 30)
+    private String scheduledSource = "IMMEDIATE";
+    @Column(nullable = false)
+    private short logicalPartition;
     @Column(nullable = false, updatable = false)
     private Instant createdAt = Instant.now();
     @Column(nullable = false)
@@ -50,6 +54,10 @@ public class OutboxMessage {
     public void setLockedUntil(Instant lockedUntil) { this.lockedUntil = lockedUntil; }
     public String getLastError() { return lastError; }
     public void setLastError(String lastError) { this.lastError = lastError; }
+    public String getScheduledSource() { return scheduledSource; }
+    public void setScheduledSource(String scheduledSource) { this.scheduledSource = scheduledSource; }
+    public short getLogicalPartition() { return logicalPartition; }
+    public void setLogicalPartition(short logicalPartition) { this.logicalPartition = logicalPartition; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
 }

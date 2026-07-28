@@ -8,6 +8,7 @@ import com.example.webhook.platform.security.WebhookSecretCipher;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -46,6 +47,8 @@ public class DeliveryService {
     private final long retryBaseDelaySeconds;
     private final long retryMaxDelaySeconds;
     private final long retryJitterSeconds;
+    private final EndpointGuard endpointGuard;
+    private final TenantQuotaService tenantQuotas;
 
     public DeliveryService(DeliveryTaskRepository deliveryRepository, DeliveryAttemptRepository attemptRepository,
                            EventRecordRepository eventRepository,
@@ -59,6 +62,26 @@ public class DeliveryService {
                            @Value("${webhook.retry.base-delay-seconds:5}") long retryBaseDelaySeconds,
                            @Value("${webhook.retry.max-delay-seconds:300}") long retryMaxDelaySeconds,
                            @Value("${webhook.retry.jitter-seconds:5}") long retryJitterSeconds) {
+        this(deliveryRepository, attemptRepository, eventRepository, signatureService, rateLimiter, outboxService,
+                secretCipher, deliveryStateMachine, eventStateMachine, restClientBuilder, meterRegistry,
+                transactionTemplate, recoveryBatchSize, retryBaseDelaySeconds, retryMaxDelaySeconds,
+                retryJitterSeconds, null, null);
+    }
+
+    @Autowired
+    public DeliveryService(DeliveryTaskRepository deliveryRepository, DeliveryAttemptRepository attemptRepository,
+                           EventRecordRepository eventRepository,
+                           SignatureService signatureService, RateLimiter rateLimiter,
+                           OutboxService outboxService,
+                           WebhookSecretCipher secretCipher,
+                           DeliveryStateMachine deliveryStateMachine, EventStateMachine eventStateMachine,
+                           RestClient.Builder restClientBuilder, MeterRegistry meterRegistry,
+                           TransactionTemplate transactionTemplate,
+                           @Value("${webhook.queue.recovery-batch-size:100}") int recoveryBatchSize,
+                           @Value("${webhook.retry.base-delay-seconds:5}") long retryBaseDelaySeconds,
+                           @Value("${webhook.retry.max-delay-seconds:300}") long retryMaxDelaySeconds,
+                           @Value("${webhook.retry.jitter-seconds:5}") long retryJitterSeconds,
+                           EndpointGuard endpointGuard, TenantQuotaService tenantQuotas) {
         this.deliveryRepository = deliveryRepository;
         this.attemptRepository = attemptRepository;
         this.eventRepository = eventRepository;
@@ -75,11 +98,16 @@ public class DeliveryService {
         this.retryBaseDelaySeconds = retryBaseDelaySeconds;
         this.retryMaxDelaySeconds = retryMaxDelaySeconds;
         this.retryJitterSeconds = retryJitterSeconds;
+        this.endpointGuard = endpointGuard;
+        this.tenantQuotas = tenantQuotas;
     }
 
     /** Compensation scanner only creates idempotent outbox records; it never writes directly to RabbitMQ. */
-    @Scheduled(fixedDelayString = "${webhook.dispatcher.fixed-delay-ms:5000}")
     public void recoverDueTasks() {
+        if (tenantQuotas != null) {
+            recoverFairly();
+            return;
+        }
         deliveryRepository.findByStatusInAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAsc(
                 List.of(DeliveryStatus.PENDING, DeliveryStatus.RETRYING), Instant.now(),
                 PageRequest.of(0, recoveryBatchSize)).forEach(task -> {
@@ -89,11 +117,57 @@ public class DeliveryService {
                 });
     }
 
+    private void recoverFairly() {
+        Instant now = Instant.now();
+        List<String> tenants = deliveryRepository.findTenantsWithDueTasks(now, Math.min(recoveryBatchSize, 100));
+        if (tenants.isEmpty()) return;
+        int baseShare = Math.max(1, recoveryBatchSize / tenants.size());
+        int scheduled = 0;
+        for (String tenant : tenants) {
+            int share = Math.min(recoveryBatchSize - scheduled,
+                    baseShare * Math.max(1, tenantQuotas.schedulingWeight(tenant)));
+            if (share <= 0) break;
+            List<DeliveryTask> tasks =
+                    deliveryRepository.findByEventTenantIdAndStatusInAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAsc(
+                            tenant, List.of(DeliveryStatus.PENDING, DeliveryStatus.RETRYING), now,
+                            PageRequest.of(0, share));
+            for (DeliveryTask task : tasks) {
+                if (outboxService.addRecoveryIfAbsent(task.getId(), task.getAttemptCount())) {
+                    meterRegistry.counter("webhook.delivery.recovered", "tenant", tenant).increment();
+                }
+                scheduled++;
+            }
+        }
+    }
+
     public Outcome processDelivery(Long deliveryId) {
         ClaimedDelivery claimed = claimDelivery(deliveryId);
         if (claimed.outcome() != null) return claimed.outcome();
-        DeliveryResult result = deliver(claimed.task());
-        return saveResult(deliveryId, result);
+        Timer.builder("webhook.delivery.claim.wait")
+                .register(meterRegistry)
+                .record(Duration.between(claimed.task().getCreatedAt(), Instant.now()));
+        EndpointGuard.Permit permit = endpointGuard == null
+                ? EndpointGuard.Permit.acquiredNoop()
+                : endpointGuard.tryAcquire(claimed.task().getEvent().getTenantId(), claimed.task().getEndpoint());
+        if (!permit.acquired()) {
+            deferDelivery(deliveryId, permit.rejectionReason());
+            meterRegistry.counter("webhook.delivery.deferred", "reason", permit.rejectionReason()).increment();
+            return Outcome.RETRY;
+        }
+        try (permit) {
+            DeliveryResult result = deliver(claimed.task());
+            return saveResult(deliveryId, result);
+        }
+    }
+
+    private void deferDelivery(Long deliveryId, String reason) {
+        transactionTemplate.executeWithoutResult(status ->
+                deliveryRepository.findWithEventAndEndpointById(deliveryId).ifPresent(task -> {
+                    task.setNextAttemptAt(Instant.now().plusSeconds(5));
+                    task.setLastError("Deferred by " + reason);
+                    unlock(task);
+                    deliveryRepository.save(task);
+                }));
     }
 
     @Transactional
@@ -180,6 +254,7 @@ public class DeliveryService {
             var response = restClient.post().uri(endpoint.getUrl()).contentType(MediaType.APPLICATION_JSON)
                     .header("X-Webhook-Event-Id", event.getEventId())
                     .header("X-Webhook-Event-Type", event.getType())
+                    .header("X-Webhook-Schema-Version", event.getSchemaVersion())
                     .header("X-Webhook-Delivery-Id", String.valueOf(task.getId()))
                     .header("X-Webhook-Timestamp", String.valueOf(timestamp.toEpochMilli()))
                     .header("X-Webhook-Signature", signature)
@@ -237,28 +312,45 @@ public class DeliveryService {
                 deliveryStateMachine.transition(task, DeliveryStatus.SUCCEEDED);
                 task.setLastError(null);
                 task.setLastStatusCode(result.statusCode);
+                task.getEndpoint().setConsecutiveFailures(0);
+                task.getEndpoint().setCircuitOpenUntil(null);
             } else if (result.outcome == Outcome.DEAD) {
                 deliveryStateMachine.transition(task, DeliveryStatus.DEAD);
                 task.setLastError(result.errorMessage);
                 task.setLastStatusCode(result.statusCode);
+                recordEndpointFailure(task.getEndpoint());
             } else {
                 deliveryStateMachine.transition(task, DeliveryStatus.RETRYING);
                 task.setNextAttemptAt(result.nextAttemptAt);
                 task.setLastError(result.errorMessage);
                 task.setLastStatusCode(result.statusCode);
+                recordEndpointFailure(task.getEndpoint());
             }
             unlock(task);
             attemptRepository.save(attempt);
             deliveryRepository.save(task);
-            if (result.outcome == Outcome.RETRY) {
-                outboxService.add(task.getId(), OutboxMessageType.RETRY, result.attemptNo);
-            } else if (result.outcome == Outcome.DEAD) {
+            if (result.outcome == Outcome.DEAD) {
                 outboxService.add(task.getId(), OutboxMessageType.DEAD, result.attemptNo);
             }
             meterRegistry.counter("webhook.delivery.outcome", "outcome", result.outcome.name()).increment();
+            if (result.outcome == Outcome.DONE || result.outcome == Outcome.DEAD) {
+                Timer.builder("webhook.delivery.end.to.end")
+                        .description("Event accepted to terminal delivery state")
+                        .register(meterRegistry)
+                        .record(Duration.between(task.getEvent().getCreatedAt(), Instant.now()));
+            }
             refreshEventStatus(task.getEvent());
             return result.outcome;
         });
+    }
+
+    private void recordEndpointFailure(WebhookEndpoint endpoint) {
+        int failures = endpoint.getConsecutiveFailures() + 1;
+        endpoint.setConsecutiveFailures(failures);
+        if (failures >= endpoint.getFailureThreshold()) {
+            endpoint.setCircuitOpenUntil(Instant.now().plusSeconds(endpoint.getCircuitCooldownSeconds()));
+            meterRegistry.counter("webhook.endpoint.circuit.opened").increment();
+        }
     }
 
     private void refreshEventStatus(EventRecord event) {

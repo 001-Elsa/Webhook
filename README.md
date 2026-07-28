@@ -1,143 +1,121 @@
-# EventRelay
+# EventRelay — 多租户可靠事件投递平台
 
-EventRelay 是一个面向外部系统集成的多租户 Webhook 投递平台，重点演示可靠事件投递、安全边界、故障恢复和可观测性，而不只是“把 HTTP 请求放进 RabbitMQ”。
+EventRelay 是一个以 MySQL 为事实来源、提供至少一次投递语义的 Webhook
+基础设施。项目重点不是堆叠中间件，而是把可靠性、水平扩容、租户治理、
+安全边界、生产部署和故障验证做成可运行闭环。
 
-## 架构与数据流
+## 可靠性语义
 
-```text
-Producer -> Auth/Tenant API -> MySQL(Event + Delivery + Outbox，同一事务)
-                                      |
-                               Outbox Publisher
-                                      |
-                                  RabbitMQ
-                                      |
-                              Lease-based Consumer
-                                      |
-                          Signed HTTP -> Webhook Receiver
-```
+- Event、Delivery 与 Outbox 在同一个 MySQL 事务创建；
+- Publisher 使用 `FOR UPDATE SKIP LOCKED` 批量抢占、有界并发和逐消息
+  RabbitMQ correlated confirm + mandatory return；
+- confirm 成功但 Outbox 状态未提交时允许重复，稳定 Delivery ID 保证接收方
+  可以幂等，系统不承诺 exactly-once；
+- Worker 手动 ACK；MySQL 不可用时 NACK/requeue，不能持久化终态时不做错误
+  ACK；
+- `next_attempt_at` 是唯一重试时钟，Scheduler 到期后创建幂等 Recovery
+  Outbox，不依赖固定 TTL 重试队列；
+- Delivery 使用租约与乐观锁；补偿扫描可以重建 RabbitMQ 中缺失的工作；
+- DEAD 批量重放是异步 ReplayJob，支持 Dry Run、最大数量、审批、进度和取消。
 
-MySQL 是事实来源。API 在一个事务中写入 Event、DeliveryTask 和 OutboxMessage；Outbox Publisher 使用租约抢占消息，等待 RabbitMQ correlated publisher confirm，并检测 mandatory return 后才标记 `PUBLISHED`。发布成功后、状态提交前宕机会造成重复发布，但不会丢消息。
+完整故障不变量见 [failure-matrix.md](docs/failure-matrix.md)。
 
-## 可靠性模型
+## 多租户与安全
 
-- 投递语义：**at-least-once（至少一次）**，不宣称 exactly-once。
-- 接收端幂等键：稳定的 `X-Webhook-Delivery-Id`。接收端必须保存该 ID 并去重。
-- 平台内部去重：任务租约与条件更新保证同一时刻只有一个 Worker 获得任务。
-- 崩溃窗口：HTTP 已成功但 Delivery 结果尚未提交时宕机，平台会再次投递；这是至少一次语义允许的重复。
-- 顺序性：默认不保证跨事件或同一 Endpoint 的严格顺序。需要顺序的业务应携带聚合版本并在接收端拒绝旧版本。
-- 重试：失败后进入 5s、30s、120s TTL 队列；达到 Endpoint 最大次数后进入 DEAD。
-- 恢复：数据库补偿扫描处理 Worker 锁过期、RabbitMQ 重启和重复消息场景。
-- Outbox 保留：已发布记录默认保留 7 天；DeliveryAttempt 默认保留 30 天。
+- 所有控制面查询按 tenant 强制过滤；
+- 租户配额覆盖每秒接入、每日事件、待投递数量、并发和 Payload 存储；
+- 恢复扫描按租户轮询并支持权重，Worker 使用 Tenant + Endpoint 双层
+  Bulkhead；
+- Endpoint 具有独立限流、并发上限、失败阈值、共享熔断状态、暂停/恢复；
+- API Key 使用 PBKDF2 哈希，支持 Key ID、多 Key 并存、Scope、过期、撤销、
+  最后使用时间/IP 和双 Key 平滑轮换；
+- Webhook Secret 使用 AES-256-GCM，密文携带 key version；KeyManagementService
+  可替换为 Vault/KMS，旧新版本可同时读取并后台断点重加密；
+- 出站 URL 有 SSRF 校验，Webhook 使用 HMAC 签名；
+- 管理操作、ReplayJob 和 AI 诊断均保存租户级审计记录。
 
-## 状态机
+## 独立运行角色
 
-Delivery：
+代码仍在同一个 Spring Boot 模块中，但部署单元已经分离：
 
-```text
-PENDING -> RETRYING -> SUCCEEDED
-    |          |
-    +--------> DEAD -> RETRYING (仅人工重放)
-```
+| Profile | 职责 | 扩容依据 |
+|---|---|---|
+| `api` | 鉴权、事件接入、控制面 API | 请求率、API 延迟 |
+| `publisher` | Outbox 抢占与 RabbitMQ confirm | backlog、最老 Outbox 年龄 |
+| `worker` | RabbitMQ 消费与 HTTP 投递 | ready 数、Delivery 等待时间 |
+| `scheduler` | 到期重试、对账、归档、ReplayJob、密钥轮换 | 单实例，数据库租约选主 |
 
-`SUCCEEDED` 是终态，禁止重新投递。Event 根据其全部 Delivery 聚合为 `DISPATCHING`、`COMPLETED`、`PARTIALLY_FAILED` 或 `DEAD`；人工重放可以让失败 Event 重新进入 `DISPATCHING`。
-
-## 安全设计
-
-- 所有 `/api/**` 接口强制 `X-App-Id` + `X-Api-Key` 认证。
-- API Key 使用 PBKDF2-HMAC-SHA256、随机盐和 210,000 次迭代保存。
-- 所有查询、统计、投递详情和重放操作按认证租户过滤。
-- API 使用 DTO，不直接序列化 JPA 实体；Webhook secret 不出现在任何响应中。
-- Webhook secret 使用 AES-256-GCM 和随机 nonce 加密落库。
-- SSRF 防护在 HTTP 客户端实际 DNS 解析阶段执行，拒绝 loopback、link-local、private、multicast 和 IPv6 ULA；内部演示 Host 必须显式加入 allowlist。
-- Demo 数据默认关闭，不存在固定默认 API 凭证。
-
-生成 256-bit AES 主密钥：
-
-```powershell
-$bytes = New-Object byte[] 32
-[Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
-$env:WEBHOOK_ENCRYPTION_KEY = [Convert]::ToBase64String($bytes)
-```
-
-主密钥不得提交到仓库。生产环境应由 KMS/Vault/容器 Secret 注入并实施轮换。
-
-## 故障处理矩阵
-
-| 故障点 | 结果 | 恢复方式 |
-| --- | --- | --- |
-| 业务事务提交前崩溃 | Event、Task、Outbox 全部回滚 | Producer 重试同一 eventId |
-| DB 提交后、MQ 发布前崩溃 | Outbox 保持 PENDING | Outbox Publisher 重启后继续发布 |
-| MQ 确认后、Outbox 提交前崩溃 | 可能重复消息 | Delivery 租约/状态去重 |
-| HTTP 调用前 Worker 崩溃 | Rabbit 未 ACK 或锁最终过期 | Rabbit 重投 + 补偿扫描 |
-| HTTP 成功后、结果提交前崩溃 | 可能重复 HTTP 调用 | 接收端按 Delivery ID 幂等 |
-| Redis 不可用 | 限流临时 fail-open并记录指标/日志 | Redis 恢复后自动继续 |
-| RabbitMQ 不可用 | Outbox 保持 PENDING 并指数退避 | RabbitMQ 恢复后自动发布 |
-
-## 本地启动
-
-需要 Docker Desktop，并显式配置演示凭证和加密主密钥：
-
-```powershell
-$env:WEBHOOK_DEMO_ENABLED = "true"
-$env:WEBHOOK_DEMO_ADMIN_API_KEY = Read-Host "Admin API Key"
-$env:WEBHOOK_DEMO_PRODUCER_API_KEY = Read-Host "Producer API Key"
-$env:WEBHOOK_DEMO_RECEIVER_SECRET = Read-Host "Receiver signing secret"
-$env:EVENTRELAY_MYSQL_USER = "eventrelay"
-$env:EVENTRELAY_MYSQL_PASSWORD = Read-Host "MySQL password"
-$env:EVENTRELAY_MYSQL_ROOT_PASSWORD = Read-Host "MySQL root password"
-$env:EVENTRELAY_REDIS_PASSWORD = Read-Host "Redis password"
-$env:EVENTRELAY_RABBITMQ_USER = "eventrelay"
-$env:EVENTRELAY_RABBITMQ_PASSWORD = Read-Host "RabbitMQ password"
-$env:EVENTRELAY_GRAFANA_ADMIN_USER = "eventrelay-admin"
-$env:EVENTRELAY_GRAFANA_ADMIN_PASSWORD = Read-Host "Grafana password"
-$bytes = New-Object byte[] 32
-[Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
-$env:WEBHOOK_ENCRYPTION_KEY = [Convert]::ToBase64String($bytes)
-docker compose up -d --build
-```
-
-服务入口：EventRelay `8080`、订单 Demo `8081`、Receiver `8082`、RabbitMQ `15672`、Prometheus `9090`、Grafana `3000`。
-
-控制台不会持久化输入的 API Key。升级旧数据库时，Flyway 会迁移字段，启动初始化器会用当前 AES 主密钥加密历史明文 Webhook secret。
+非 API 角色保留独立 management 端口，但 `/api` 返回 404。Spring graceful
+shutdown、Rabbit listener shutdown timeout、Publisher drain 和 Kubernetes
+`preStop` 共同保证滚动发布时停止领取新工作并等待在途任务。
 
 ## 可观测性与 SLO
 
-- JSON 结构化日志包含 service、traceId、时间、级别、logger 和异常栈。
-- Prometheus 指标覆盖投递成功/失败/耗时、最终结果、补偿恢复、认证失败、Outbox backlog/发布失败。
-- Grafana 展示成功数、失败数、Outbox backlog、恢复数、P95/P99 和 Outbox 发布速率。
-- 告警规则覆盖实例不可用、Outbox 积压、Outbox 发布失败、投递失败率 >5%、P99 >3s。
-- 示例目标：API 可用性 99.9%，Outbox backlog 连续 5 分钟不超过 100，投递 P99（不含接收端业务耗时）按实测报告确认。
+Micrometer、Prometheus、Grafana 和 OpenTelemetry 覆盖 API → MySQL →
+Outbox → RabbitMQ → Worker → Webhook HTTP。消息 observation 会传播 trace
+上下文。关键指标包括：
 
-## 测试与故障演练
+- Outbox 数量、最老年龄、批量大小、confirm 延迟、发布线程/队列；
+- Delivery 领取等待、HTTP 总耗时、端到端终态延迟、ready/DEAD；
+- Hikari、JVM、GC、进程资源和 Redis 降级；
+- ReplayJob、配额拒绝、熔断、密钥重加密和诊断分类。
+
+Prometheus 规则包含 99.9% 成功率 SLO 的快/慢多窗口 Burn Rate 告警。
+
+## 可选 AI 控制面
+
+`POST /api/deliveries/{id}/diagnosis` 是只读 Incident Copilot。默认使用可测试
+的确定性规则；配置 `WEBHOOK_AI_ENABLED=true` 后可调用受控模型代理。输入
+不包含 Payload、Secret、API Key、完整响应体或原始栈，只包含脱敏错误、
+状态码、尝试时间线和积压信号。模型输出必须引用有效 evidence ID，否则
+丢弃并回退规则。AI 不能 ACK、重试、修改 Payload 或执行重放，失败不会
+影响投递链路。12 类离线故障集在测试中持续评估。
+
+## 本地启动
+
+复制 `.env.example`，设置随机凭证和 32 字节 Base64 加密密钥，然后：
 
 ```powershell
-.\.tools\apache-maven-3.9.9\bin\mvn.cmd clean test
+docker compose up -d --build --wait
+```
+
+主要入口：
+
+- API：<http://localhost:8080>
+- Receiver Mock：<http://localhost:8082>
+- RabbitMQ：<http://localhost:15672>
+- Prometheus：<http://localhost:9090>
+- Grafana：<http://localhost:3000>
+
+验证：
+
+```powershell
+.\.tools\apache-maven-3.9.9\bin\mvn.cmd verify
 docker compose config -q
 ```
 
-无 Docker 时 Testcontainers 测试自动跳过；Docker 可用时会启动真实 MySQL、Redis、RabbitMQ，并验证连接及容器重启后的恢复。
+## 性能、部署与灾备
 
-故障演练脚本：
+- [performance-report.md](docs/performance-report.md) 明确区分接入、Outbox、
+  Worker 和真实端到端链路；每档三次并保留 Prometheus/MySQL/容器原始证据。
+- [Helm Chart](deploy/helm/eventrelay) 包含四角色 Deployment、ConfigMap、
+  Secret 引用、startup/readiness/liveness、PDB、HPA、requests/limits、
+  NetworkPolicy、迁移 Job、滚动更新与原子回滚。
+- CI 执行测试/Testcontainers、JaCoCo、Secret 扫描、SBOM、不可变 SHA 镜像、
+  Trivy 漏洞门禁、四角色测试环境部署和真实端到端 Smoke Test。
+- [disaster-recovery.md](docs/disaster-recovery.md) 定义备份、恢复顺序以及
+  尚需演练验证的 RPO/RTO 目标。
 
-```powershell
-.\scripts\fault-drill.ps1
-```
+## 容量声明
 
-## 压测
+历史上已复现的结果仅为单实例、无匹配 Endpoint 的 50 TPS 接入基线：
+P95 220.44 ms、P99 300.48 ms、成功率 100%。历史 200 TPS 实验只达到
+66.21 TPS，并出现明显排队，不能写成现有能力。新的批量 Publisher、角色
+分离和多实例结构已经具备，但任何新 TPS、端到端延迟或水平扩展数字都必须
+在 `scripts/performance/run-suite.ps1` 实测三轮通过后才能用于简历。
 
-k6 便携版可放在 `D:\Docker_Desktop\k6`。本机示例命令：
+## SDK 与运维工具
 
-```powershell
-$env:EVENTRELAY_APP_ID = "demo-order-service"
-$env:EVENTRELAY_API_KEY = $env:WEBHOOK_DEMO_PRODUCER_API_KEY
-$env:EVENTRELAY_RATE = "50"
-$env:EVENTRELAY_DURATION = "60s"
-& 'D:\Docker_Desktop\k6\k6-v2.0.0-windows-amd64\k6.exe' run `
-  --summary-export=data/load-test-summary.json scripts/load-test.js
-```
-
-2026-07-22 本机单实例接入链路实测为 49.94 TPS、P95 220.44 ms、P99 300.48 ms、错误率 0%；200 TPS 目标负载会过载，不能作为容量声明。测试边界、环境和原始证据见 [性能报告](docs/performance-report.md)。
-
-## 技术栈
-
-Java 17、Spring Boot 3、Spring Data JPA、MySQL 8、Flyway、RabbitMQ、Redis Lua、Micrometer、Prometheus、Grafana、Testcontainers、k6、Docker Compose。
+`sdk/` 提供 Java、Python、JavaScript 的常量时间签名验证示例；`cli/` 支持
+查询 Delivery、创建 ReplayJob 和只读诊断。事件支持 `schemaVersion`，
+Endpoint 支持受限的确定性订阅过滤表达式，例如 `$.region==cn`。

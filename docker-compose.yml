@@ -54,7 +54,7 @@ services:
       timeout: 3s
       retries: 20
 
-  notification-platform:
+  eventrelay-api:
     build:
       context: .
       args: { MODULE: notification-platform }
@@ -70,12 +70,17 @@ services:
       WEBHOOK_DEMO_RECEIVER_URL: http://receiver-mock:8082/webhook/demo-merchant
       WEBHOOK_ALLOWED_PRIVATE_HOSTS: ${WEBHOOK_ALLOWED_PRIVATE_HOSTS:-receiver-mock}
       WEBHOOK_ENCRYPTION_KEY: ${WEBHOOK_ENCRYPTION_KEY:-}
+      WEBHOOK_ENCRYPTION_KEYS: ${WEBHOOK_ENCRYPTION_KEYS:-}
+      WEBHOOK_ACTIVE_KEY_VERSION: ${WEBHOOK_ACTIVE_KEY_VERSION:-1}
       WEBHOOK_DEMO_ENABLED: ${WEBHOOK_DEMO_ENABLED:-false}
       WEBHOOK_DEMO_ADMIN_API_KEY: ${WEBHOOK_DEMO_ADMIN_API_KEY:-}
       WEBHOOK_DEMO_PRODUCER_API_KEY: ${WEBHOOK_DEMO_PRODUCER_API_KEY:-}
       WEBHOOK_DEMO_RECEIVER_SECRET: ${WEBHOOK_DEMO_RECEIVER_SECRET:-}
       # Prometheus is on the private Compose network; this port is intentionally not published to the host.
       MANAGEMENT_ADDRESS: 0.0.0.0
+      MANAGEMENT_PORT: 8083
+      SERVER_PORT: 8080
+      SPRING_PROFILES_ACTIVE: api
     ports: ["8080:8080"]
     depends_on:
       mysql: { condition: service_healthy }
@@ -83,7 +88,98 @@ services:
       rabbitmq: { condition: service_healthy }
       receiver-mock: { condition: service_healthy }
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8083/actuator/health | grep -q UP"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8083/actuator/health/readiness | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  eventrelay-publisher:
+    build:
+      context: .
+      args: { MODULE: notification-platform }
+    environment:
+      MYSQL_URL: jdbc:mysql://mysql:3306/event_relay?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
+      MYSQL_USER: ${EVENTRELAY_MYSQL_USER:-}
+      MYSQL_PASSWORD: ${EVENTRELAY_MYSQL_PASSWORD:-}
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${EVENTRELAY_REDIS_PASSWORD:-}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: ${EVENTRELAY_RABBITMQ_USER:-}
+      RABBITMQ_PASSWORD: ${EVENTRELAY_RABBITMQ_PASSWORD:-}
+      WEBHOOK_ENCRYPTION_KEY: ${WEBHOOK_ENCRYPTION_KEY:-}
+      WEBHOOK_ENCRYPTION_KEYS: ${WEBHOOK_ENCRYPTION_KEYS:-}
+      WEBHOOK_ACTIVE_KEY_VERSION: ${WEBHOOK_ACTIVE_KEY_VERSION:-1}
+      SPRING_PROFILES_ACTIVE: publisher
+      SERVER_PORT: 8080
+      MANAGEMENT_PORT: 8083
+      MANAGEMENT_ADDRESS: 0.0.0.0
+    depends_on:
+      mysql: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8083/actuator/health/readiness | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  eventrelay-worker:
+    build:
+      context: .
+      args: { MODULE: notification-platform }
+    environment:
+      MYSQL_URL: jdbc:mysql://mysql:3306/event_relay?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
+      MYSQL_USER: ${EVENTRELAY_MYSQL_USER:-}
+      MYSQL_PASSWORD: ${EVENTRELAY_MYSQL_PASSWORD:-}
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${EVENTRELAY_REDIS_PASSWORD:-}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: ${EVENTRELAY_RABBITMQ_USER:-}
+      RABBITMQ_PASSWORD: ${EVENTRELAY_RABBITMQ_PASSWORD:-}
+      WEBHOOK_ALLOWED_PRIVATE_HOSTS: ${WEBHOOK_ALLOWED_PRIVATE_HOSTS:-receiver-mock}
+      WEBHOOK_ENCRYPTION_KEY: ${WEBHOOK_ENCRYPTION_KEY:-}
+      WEBHOOK_ENCRYPTION_KEYS: ${WEBHOOK_ENCRYPTION_KEYS:-}
+      WEBHOOK_ACTIVE_KEY_VERSION: ${WEBHOOK_ACTIVE_KEY_VERSION:-1}
+      SPRING_PROFILES_ACTIVE: worker
+      SERVER_PORT: 8080
+      MANAGEMENT_PORT: 8083
+      MANAGEMENT_ADDRESS: 0.0.0.0
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      receiver-mock: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8083/actuator/health/readiness | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  eventrelay-scheduler:
+    build:
+      context: .
+      args: { MODULE: notification-platform }
+    environment:
+      MYSQL_URL: jdbc:mysql://mysql:3306/event_relay?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
+      MYSQL_USER: ${EVENTRELAY_MYSQL_USER:-}
+      MYSQL_PASSWORD: ${EVENTRELAY_MYSQL_PASSWORD:-}
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${EVENTRELAY_REDIS_PASSWORD:-}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: ${EVENTRELAY_RABBITMQ_USER:-}
+      RABBITMQ_PASSWORD: ${EVENTRELAY_RABBITMQ_PASSWORD:-}
+      WEBHOOK_ENCRYPTION_KEY: ${WEBHOOK_ENCRYPTION_KEY:-}
+      WEBHOOK_ENCRYPTION_KEYS: ${WEBHOOK_ENCRYPTION_KEYS:-}
+      WEBHOOK_ACTIVE_KEY_VERSION: ${WEBHOOK_ACTIVE_KEY_VERSION:-1}
+      SPRING_PROFILES_ACTIVE: scheduler
+      SERVER_PORT: 8080
+      MANAGEMENT_PORT: 8083
+      MANAGEMENT_ADDRESS: 0.0.0.0
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8083/actuator/health/readiness | grep -q UP"]
       interval: 10s
       timeout: 5s
       retries: 30
@@ -93,12 +189,12 @@ services:
       context: .
       args: { MODULE: demo-order-service }
     environment:
-      NOTIFICATION_PLATFORM_URL: http://notification-platform:8080
+      NOTIFICATION_PLATFORM_URL: http://eventrelay-api:8080
       NOTIFICATION_APP_ID: demo-order-service
       NOTIFICATION_API_KEY: ${WEBHOOK_DEMO_PRODUCER_API_KEY:-}
     ports: ["8081:8081"]
     depends_on:
-      notification-platform: { condition: service_healthy }
+      eventrelay-api: { condition: service_healthy }
 
   prometheus:
     image: prom/prometheus:v3.4.2
@@ -109,7 +205,7 @@ services:
       - prometheus-data:/prometheus
     ports: ["9090:9090"]
     depends_on:
-      notification-platform: { condition: service_healthy }
+      eventrelay-api: { condition: service_healthy }
 
   grafana:
     image: grafana/grafana:12.0.2

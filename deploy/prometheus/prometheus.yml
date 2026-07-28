@@ -7,4 +7,8 @@ scrape_configs:
   - job_name: eventrelay
     metrics_path: /actuator/prometheus
     static_configs:
-      - targets: ["notification-platform:8083"]
+      - targets:
+          - "eventrelay-api:8083"
+          - "eventrelay-publisher:8083"
+          - "eventrelay-worker:8083"
+          - "eventrelay-scheduler:8083"

@@ -35,14 +35,6 @@ public class RabbitDeliveryQueue implements DeliveryQueue {
     }
 
     @Override
-    public void enqueueRetry(Long deliveryId, int attemptNo) {
-        String key = attemptNo <= 1 ? "retry.5s" : attemptNo <= 3 ? "retry.30s" : "retry.120s";
-        CorrelationData correlation = correlation(deliveryId);
-        rabbitTemplate.convertAndSend(RabbitTopology.RETRY_EXCHANGE, key, deliveryId, correlation);
-        awaitConfirmed(correlation);
-    }
-
-    @Override
     public void enqueueDead(Long deliveryId) {
         CorrelationData correlation = correlation(deliveryId);
         rabbitTemplate.convertAndSend(RabbitTopology.DEAD_EXCHANGE, RabbitTopology.DEAD_KEY, deliveryId, correlation);

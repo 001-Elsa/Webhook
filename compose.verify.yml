@@ -1,0 +1,12 @@
+services:
+  mysql:
+    ports: !reset []
+  redis:
+    ports: !reset []
+  rabbitmq:
+    ports: !reset []
+  receiver-mock:
+    ports: !reset []
+  eventrelay-api:
+    ports: !override
+      - "18080:8080"

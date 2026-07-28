@@ -32,8 +32,10 @@ public interface OutboxMessageRepository extends JpaRepository<OutboxMessage, Lo
     @Modifying
     @Query(value = """
             insert ignore into outbox_messages
-                (delivery_id, message_type, attempt_no, status, publish_attempts, next_attempt_at, created_at, updated_at)
-            values (:deliveryId, :messageType, :attemptNo, 'PENDING', 0, current_timestamp(6), current_timestamp(6), current_timestamp(6))
+                (delivery_id, message_type, attempt_no, status, publish_attempts, next_attempt_at,
+                 logical_partition, created_at, updated_at)
+            values (:deliveryId, :messageType, :attemptNo, 'PENDING', 0, current_timestamp(6),
+                    mod(:deliveryId, 16), current_timestamp(6), current_timestamp(6))
             """, nativeQuery = true)
     int addRecoveryIfAbsent(@Param("deliveryId") Long deliveryId,
                             @Param("messageType") String messageType,

@@ -1,5 +1,6 @@
 server:
   port: 8080
+  shutdown: graceful
 
 management:
   server:
@@ -9,6 +10,21 @@ management:
     web:
       exposure:
         include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db,rabbit
+        liveness:
+          include: livenessState
+  tracing:
+    sampling:
+      probability: ${OTEL_SAMPLING_PROBABILITY:1.0}
+  otlp:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
 
 logging:
   pattern:
@@ -21,6 +37,11 @@ spring:
     url: ${MYSQL_URL:jdbc:mysql://localhost:3306/event_relay?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
     username: ${MYSQL_USER:}
     password: ${MYSQL_PASSWORD:}
+    hikari:
+      maximum-pool-size: ${HIKARI_MAXIMUM_POOL_SIZE:20}
+      minimum-idle: ${HIKARI_MINIMUM_IDLE:5}
+      connection-timeout: ${HIKARI_CONNECTION_TIMEOUT_MS:2000}
+      leak-detection-threshold: ${HIKARI_LEAK_DETECTION_MS:0}
   jpa:
     hibernate:
       ddl-auto: validate
@@ -35,12 +56,17 @@ spring:
     password: ${RABBITMQ_PASSWORD:}
     publisher-confirm-type: correlated
     publisher-returns: true
-    template:
-      mandatory: true
     listener:
       simple:
         acknowledge-mode: manual
-        prefetch: 20
+        prefetch: ${RABBITMQ_PREFETCH:20}
+        concurrency: ${RABBITMQ_CONCURRENCY:8}
+        max-concurrency: ${RABBITMQ_MAX_CONCURRENCY:32}
+        shutdown-timeout: ${RABBITMQ_SHUTDOWN_TIMEOUT:30s}
+        observation-enabled: true
+    template:
+      mandatory: true
+      observation-enabled: true
   data:
     redis:
       host: ${REDIS_HOST:localhost}
@@ -70,9 +96,16 @@ webhook:
   security:
     allowed-private-hosts: ${WEBHOOK_ALLOWED_PRIVATE_HOSTS:}
     encryption-key: ${WEBHOOK_ENCRYPTION_KEY:}
+    encryption-keys: ${WEBHOOK_ENCRYPTION_KEYS:}
+    active-key-version: ${WEBHOOK_ACTIVE_KEY_VERSION:1}
+    reencrypt-delay-ms: ${WEBHOOK_SECRET_REENCRYPT_DELAY_MS:60000}
   outbox:
     fixed-delay-ms: ${WEBHOOK_OUTBOX_FIXED_DELAY_MS:250}
     batch-size: ${WEBHOOK_OUTBOX_BATCH_SIZE:100}
+    publisher-concurrency: ${WEBHOOK_OUTBOX_PUBLISHER_CONCURRENCY:8}
+    queue-capacity: ${WEBHOOK_OUTBOX_QUEUE_CAPACITY:200}
+    lease-seconds: ${WEBHOOK_OUTBOX_LEASE_SECONDS:30}
+    max-per-tenant: ${WEBHOOK_OUTBOX_MAX_PER_TENANT:100}
   event-reconciler:
     fixed-delay-ms: ${WEBHOOK_EVENT_RECONCILER_DELAY_MS:5000}
     batch-size: ${WEBHOOK_EVENT_RECONCILER_BATCH_SIZE:200}
@@ -82,7 +115,26 @@ webhook:
     base-delay-seconds: ${WEBHOOK_RETRY_BASE_DELAY_SECONDS:5}
     max-delay-seconds: ${WEBHOOK_RETRY_MAX_DELAY_SECONDS:300}
     jitter-seconds: ${WEBHOOK_RETRY_JITTER_SECONDS:5}
+  replay:
+    approval-required: ${WEBHOOK_REPLAY_APPROVAL_REQUIRED:true}
+    poll-delay-ms: ${WEBHOOK_REPLAY_POLL_DELAY_MS:2000}
+  ai:
+    enabled: ${WEBHOOK_AI_ENABLED:false}
+    endpoint: ${WEBHOOK_AI_ENDPOINT:http://localhost:8099/v1/diagnose}
+    api-key: ${WEBHOOK_AI_API_KEY:}
+    model: ${WEBHOOK_AI_MODEL:disabled}
+    prompt-version: ${WEBHOOK_AI_PROMPT_VERSION:incident-v1}
+    max-tokens: ${WEBHOOK_AI_MAX_TOKENS:800}
   retention:
     delivery-attempt-days: ${DELIVERY_ATTEMPT_RETENTION_DAYS:30}
     outbox-days: ${OUTBOX_RETENTION_DAYS:7}
     cleanup-cron: "0 30 3 * * *"
+
+eventrelay:
+  roles:
+    api: ${EVENTRELAY_ROLE_API:true}
+    publisher: ${EVENTRELAY_ROLE_PUBLISHER:true}
+    worker: ${EVENTRELAY_ROLE_WORKER:true}
+    scheduler: ${EVENTRELAY_ROLE_SCHEDULER:true}
+
+spring.lifecycle.timeout-per-shutdown-phase: ${SHUTDOWN_TIMEOUT:30s}

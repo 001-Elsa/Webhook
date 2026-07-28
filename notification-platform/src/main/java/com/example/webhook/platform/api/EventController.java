@@ -10,6 +10,7 @@ import com.example.webhook.platform.service.EventService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
 import java.util.List;
+import java.util.Map;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 @RestController
@@ -34,5 +35,14 @@ public class EventController {
     public List<EventResponse> list() {
         return eventRepository.findByTenantIdOrderByCreatedAtDesc(RequestContext.principal().tenantId()).stream()
                 .map(event -> EventResponse.from(event, objectMapper)).toList();
+    }
+
+    @GetMapping("/{eventId}/status")
+    public Map<String, Object> status(@PathVariable String eventId) {
+        EventRecord event = eventRepository.findByTenantIdAndEventId(
+                RequestContext.principal().tenantId(), eventId)
+                .orElseThrow(() -> new IllegalArgumentException("Event not found: " + eventId));
+        return Map.of("eventId", event.getEventId(), "status", event.getStatus(),
+                "createdAt", event.getCreatedAt());
     }
 }

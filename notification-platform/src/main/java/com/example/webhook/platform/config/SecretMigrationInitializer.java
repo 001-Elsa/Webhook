@@ -6,6 +6,7 @@ import org.springframework.boot.CommandLineRunner;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
+import java.time.Instant;
 
 @Component
 @Order(0)
@@ -21,6 +22,10 @@ public class SecretMigrationInitializer implements CommandLineRunner {
     @Override @Transactional
     public void run(String... args) {
         repository.findAll().stream().filter(endpoint -> !cipher.isEncrypted(endpoint.getEncryptedSecret()))
-                .forEach(endpoint -> endpoint.setEncryptedSecret(cipher.encrypt(endpoint.getEncryptedSecret())));
+                .forEach(endpoint -> {
+                    endpoint.setEncryptedSecret(cipher.encrypt(endpoint.getEncryptedSecret()));
+                    endpoint.setKeyVersion(cipher.activeVersion());
+                    endpoint.setSecretUpdatedAt(Instant.now());
+                });
     }
 }
