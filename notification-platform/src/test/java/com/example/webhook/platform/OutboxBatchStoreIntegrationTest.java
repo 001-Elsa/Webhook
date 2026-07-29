@@ -34,6 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Testcontainers(disabledWithoutDocker = true)
 @SpringBootTest(properties = {
         "webhook.dispatcher.fixed-delay-ms=600000",
+        "webhook.outbox.fixed-delay-ms=600000",
         "webhook.demo-receiver-url=http://localhost:9/webhook",
         "webhook.security.encryption-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
         "spring.rabbitmq.listener.simple.auto-startup=false",
