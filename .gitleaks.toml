@@ -2,6 +2,7 @@ title = "EventRelay gitleaks config"
 
 # CI and unit tests intentionally use fixed non-production credentials.
 # These are documented test fixtures, not real secrets.
+# Gitleaks v8 expects allowlist regexes/paths/commits as string arrays (not [[tables]]).
 
 [allowlist]
 description = "Documented CI/test fixtures and placeholder examples"
@@ -10,19 +11,9 @@ paths = [
   '''(?i)\.env\.example$''',
   '''(?i)docs/.*''',
 ]
-
-[[allowlist.regexes]]
-description = "CI smoke Compose credentials (non-production)"
-regex = '''ci-(admin-key|producer-key|receiver-secret|mysql-password|root-password|redis-password|rabbit-password|grafana-password)'''
-
-[[allowlist.regexes]]
-description = "Deterministic 32-byte all-A test encryption key used in CI and unit tests"
-regex = '''AAAA{10,}[=]*'''
-
-[[allowlist.regexes]]
-description = "Common placeholder values in examples"
-regex = '''(?i)(replace-with-|changeme|your-|example-|dummy-)'''
-
-[[allowlist.commits]]
-description = "Ignore generated binary/cache noise if present historically"
+regexes = [
+  '''ci-(admin-key|producer-key|receiver-secret|mysql-password|root-password|redis-password|rabbit-password|grafana-password)''',
+  '''A{20,}[=]*''',
+  '''(?i)(replace-with-|changeme|your-|example-|dummy-)''',
+]
 commits = []
