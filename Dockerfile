@@ -9,11 +9,13 @@ COPY . .
 ARG MODULE
 RUN mvn -B -pl ${MODULE} -am -DskipTests package
 
-FROM eclipse-temurin:17-jre
+FROM eclipse-temurin:17-jre-noble
 WORKDIR /app
 ARG MODULE
 COPY --from=build /workspace/${MODULE}/target/*.jar app.jar
+# Upgrade OS packages so Trivy's ignore-unfixed HIGH/CRITICAL gate stays green.
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 USER 10001

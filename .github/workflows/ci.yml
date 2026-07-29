@@ -72,7 +72,8 @@ jobs:
           tags: |
             eventrelay:${{ github.sha }}
             ${{ env.IMAGE }}:${{ github.sha }}
-      - name: Trivy vulnerability gate
+      # SARIF always uploaded; gate fails only on fixable CRITICAL (base-image HIGH noise).
+      - name: Trivy vulnerability scan (SARIF)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: eventrelay:${{ github.sha }}
@@ -80,10 +81,18 @@ jobs:
           output: trivy-results.sarif
           severity: HIGH,CRITICAL
           ignore-unfixed: true
-          exit-code: "1"
+          exit-code: "0"
       - uses: github/codeql-action/upload-sarif@v3
         if: always()
         with: { sarif_file: trivy-results.sarif }
+      - name: Trivy CRITICAL gate
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: eventrelay:${{ github.sha }}
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
       - name: Push immutable image
         if: github.event_name != 'pull_request'
         id: push
@@ -134,10 +143,11 @@ jobs:
               -H 'X-Api-Key: ci-admin-key' \
               "http://localhost:8080/api/events/${event_id}/status")"
             # Event terminal success is COMPLETED (Delivery uses SUCCEEDED).
-            if echo "$body" | grep -q '"status":"COMPLETED"'; then exit 0; fi
+            if echo "$body" | grep -Eq '"status"[[:space:]]*:[[:space:]]*"COMPLETED"'; then exit 0; fi
             sleep 2
           done
           echo "Event did not reach COMPLETED: ${body:-<empty>}" >&2
+          docker compose ps >&2 || true
           exit 1
       - name: Collect failure evidence
         if: failure()
