@@ -105,15 +105,17 @@ public class OutboxBatchStore {
                     """, tenants.get(i), due, due, limit, owner, lease);
         }
         if (claimed == 0) return List.of();
+        // Match by owner + lease still in the future — avoid exact Timestamp equality,
+        // which can miss rows when MySQL DATETIME rounding differs from JDBC.
         List<Long> leased = jdbc.queryForList("""
                 select id
                   from outbox_messages
                  where locked_by = ?
-                   and locked_until = ?
+                   and locked_until > ?
                    and status = 'PENDING'
                  order by id
                  limit ?
-                """, Long.class, owner, lease, batchSize);
+                """, Long.class, owner, due, batchSize);
         return repository.findAllById(leased);
     }
 

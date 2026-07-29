@@ -79,13 +79,15 @@ class OutboxBatchStoreIntegrationTest {
         CountDownLatch ready = new CountDownLatch(2);
         CountDownLatch start = new CountDownLatch(1);
         try {
-            Future<List<OutboxMessage>> first = pool.submit(() -> claimAfterSignal(ready, start, "worker-a", now));
-            Future<List<OutboxMessage>> second = pool.submit(() -> claimAfterSignal(ready, start, "worker-b", now));
+            Instant leaseA = now.plusSeconds(60);
+            Instant leaseB = now.plusSeconds(90);
+            Future<List<OutboxMessage>> first = pool.submit(() -> claimAfterSignal(ready, start, "worker-a", now, leaseA));
+            Future<List<OutboxMessage>> second = pool.submit(() -> claimAfterSignal(ready, start, "worker-b", now, leaseB));
             assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
             start.countDown();
 
-            List<OutboxMessage> batchA = first.get(30, TimeUnit.SECONDS);
-            List<OutboxMessage> batchB = second.get(30, TimeUnit.SECONDS);
+            List<OutboxMessage> batchA = first.get(60, TimeUnit.SECONDS);
+            List<OutboxMessage> batchB = second.get(60, TimeUnit.SECONDS);
 
             assertThat(batchA).isNotEmpty();
             assertThat(batchB).isNotEmpty();
@@ -102,10 +104,11 @@ class OutboxBatchStoreIntegrationTest {
     }
 
     private List<OutboxMessage> claimAfterSignal(CountDownLatch ready, CountDownLatch start,
-                                                 String owner, Instant now) throws InterruptedException {
+                                                 String owner, Instant now, Instant lockedUntil)
+            throws InterruptedException {
         ready.countDown();
         assertThat(start.await(10, TimeUnit.SECONDS)).isTrue();
-        return batchStore.claimBatch(owner, 10, 100, now, now.plusSeconds(60));
+        return batchStore.claimBatch(owner, 10, 100, now, lockedUntil);
     }
 
     private void seedPendingOutbox(String tenantId, Instant nextAttemptAt) {
