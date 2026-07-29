@@ -20,7 +20,7 @@
         <!-- Override Tomcat to 10.1.42 (Spring Boot 3.3.13 baseline) to fix
              CVE-2024-50379 / CVE-2024-56337 (CRITICAL TOCTOU RCE).
              Remove when Spring Boot itself is upgraded. -->
-        <tomcat.version>10.1.42</tomcat.version>
+        <tomcat.version>10.1.57</tomcat.version>
         <testcontainers.version>1.21.4</testcontainers.version>
         <!-- Container restart drills require a Docker environment whose dynamic port mapping survives restarts. -->
         <excluded.test.tags>fault-injection</excluded.test.tags>
