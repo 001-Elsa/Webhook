@@ -81,12 +81,15 @@ services:
       MANAGEMENT_PORT: 8083
       SERVER_PORT: 8080
       SPRING_PROFILES_ACTIVE: api
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+      OTEL_SERVICE_NAME: eventrelay-api
     ports: ["8080:8080"]
     depends_on:
       mysql: { condition: service_healthy }
       redis: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
       receiver-mock: { condition: service_healthy }
+      otel-collector: { condition: service_started }
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8083/actuator/health/readiness | grep -q UP"]
       interval: 10s
@@ -113,9 +116,12 @@ services:
       SERVER_PORT: 8080
       MANAGEMENT_PORT: 8083
       MANAGEMENT_ADDRESS: 0.0.0.0
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+      OTEL_SERVICE_NAME: eventrelay-publisher
     depends_on:
       mysql: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
+      otel-collector: { condition: service_started }
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8083/actuator/health/readiness | grep -q UP"]
       interval: 10s
@@ -143,11 +149,14 @@ services:
       SERVER_PORT: 8080
       MANAGEMENT_PORT: 8083
       MANAGEMENT_ADDRESS: 0.0.0.0
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+      OTEL_SERVICE_NAME: eventrelay-worker
     depends_on:
       mysql: { condition: service_healthy }
       redis: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
       receiver-mock: { condition: service_healthy }
+      otel-collector: { condition: service_started }
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8083/actuator/health/readiness | grep -q UP"]
       interval: 10s
@@ -174,10 +183,13 @@ services:
       SERVER_PORT: 8080
       MANAGEMENT_PORT: 8083
       MANAGEMENT_ADDRESS: 0.0.0.0
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+      OTEL_SERVICE_NAME: eventrelay-scheduler
     depends_on:
       mysql: { condition: service_healthy }
       redis: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
+      otel-collector: { condition: service_started }
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8083/actuator/health/readiness | grep -q UP"]
       interval: 10s
@@ -195,6 +207,20 @@ services:
     ports: ["8081:8081"]
     depends_on:
       eventrelay-api: { condition: service_healthy }
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.128.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./deploy/otel/otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+    ports: ["4317:4317", "4318:4318"]
+    depends_on: [jaeger]
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.69.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports: ["16686:16686"]
 
   prometheus:
     image: prom/prometheus:v3.4.2

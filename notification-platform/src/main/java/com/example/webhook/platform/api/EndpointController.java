@@ -3,6 +3,7 @@ package com.example.webhook.platform.api;
 import com.example.webhook.platform.api.dto.CreateEndpointRequest;
 import com.example.webhook.platform.api.dto.EndpointResponse;
 import com.example.webhook.platform.api.dto.UpdateEndpointPolicyRequest;
+import com.example.webhook.platform.domain.CircuitState;
 import com.example.webhook.platform.domain.WebhookEndpoint;
 import com.example.webhook.platform.repo.WebhookEndpointRepository;
 import com.example.webhook.platform.security.RequestContext;
@@ -102,6 +103,8 @@ public class EndpointController {
         endpoint.setPausedAt(null);
         endpoint.setCircuitOpenUntil(null);
         endpoint.setConsecutiveFailures(0);
+        endpoint.setCircuitState(CircuitState.CLOSED);
+        endpoint.setHalfOpenProbes(0);
         endpoint.setActive(true);
         WebhookEndpoint saved = repository.save(endpoint);
         audit("ENDPOINT_RESUMED", id);

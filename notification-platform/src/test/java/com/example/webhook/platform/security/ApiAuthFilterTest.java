@@ -3,14 +3,16 @@ package com.example.webhook.platform.security;
 import com.example.webhook.platform.domain.ApplicationClient;
 import com.example.webhook.platform.domain.ClientRole;
 import com.example.webhook.platform.repo.ApplicationClientRepository;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
+import org.springframework.mock.web.MockFilterChain;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
-import org.springframework.mock.web.MockFilterChain;
+
 import java.util.Optional;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.*;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 class ApiAuthFilterTest {
     @Test
@@ -35,7 +37,8 @@ class ApiAuthFilterTest {
         client.setRole(ClientRole.ADMIN);
         client.setApiKeyHash(hasher.hash("secret-key"));
         when(repository.findByAppIdAndActiveTrue("admin-a")).thenReturn(Optional.of(client));
-        ApiAuthFilter filter = new ApiAuthFilter(repository, hasher, new SimpleMeterRegistry());
+        SimpleMeterRegistry metrics = new SimpleMeterRegistry();
+        ApiAuthFilter filter = new ApiAuthFilter(repository, hasher, metrics);
         MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/deliveries");
         request.addHeader("X-App-Id", "admin-a");
         request.addHeader("X-Api-Key", "secret-key");
@@ -44,6 +47,30 @@ class ApiAuthFilterTest {
         filter.doFilter(request, response, new MockFilterChain());
 
         assertThat(response.getStatus()).isEqualTo(200);
+        assertThat(metrics.counter("webhook.auth.legacy.used").count()).isEqualTo(1.0);
+    }
+
+    @Test
+    void legacyKeyRejectedWhenDisabled() throws Exception {
+        ApplicationClientRepository repository = mock(ApplicationClientRepository.class);
+        ApiKeyHasher hasher = new ApiKeyHasher();
+        ApplicationClient client = new ApplicationClient();
+        client.setTenantId("tenant-a");
+        client.setAppId("admin-a");
+        client.setRole(ClientRole.ADMIN);
+        client.setApiKeyHash(hasher.hash("secret-key"));
+        when(repository.findByAppIdAndActiveTrue("admin-a")).thenReturn(Optional.of(client));
+        SimpleMeterRegistry metrics = new SimpleMeterRegistry();
+        ApiAuthFilter filter = new ApiAuthFilter(repository, null, hasher, metrics, false, "");
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/deliveries");
+        request.addHeader("X-App-Id", "admin-a");
+        request.addHeader("X-Api-Key", "secret-key");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, new MockFilterChain());
+
+        assertThat(response.getStatus()).isEqualTo(401);
+        assertThat(metrics.counter("webhook.auth.legacy.rejected").count()).isEqualTo(1.0);
     }
 
     @Test

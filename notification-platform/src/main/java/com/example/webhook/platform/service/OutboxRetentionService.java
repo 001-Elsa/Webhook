@@ -11,6 +11,10 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 
+/**
+ * Deletes published outbox rows past retention. Reclaiming tenant_daily_usage counters
+ * is N/A here — daily payload counters track ingress acceptance, not outbox row storage.
+ */
 @Service
 @ConditionalOnProperty(name = "eventrelay.roles.scheduler", havingValue = "true", matchIfMissing = true)
 public class OutboxRetentionService {
@@ -31,5 +35,6 @@ public class OutboxRetentionService {
         int deleted = repository.deletePublishedBefore(OutboxStatus.PUBLISHED,
                 Instant.now().minus(retentionDays, ChronoUnit.DAYS));
         metrics.counter("webhook.outbox.deleted").increment(deleted);
+        metrics.counter("webhook.outbox.archived").increment(deleted);
     }
 }

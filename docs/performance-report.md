@@ -14,10 +14,88 @@ Webhook Endpoint，因此不能代表端到端投递能力：
 原始历史证据保存在 `data/load-test-summary-50tps.json` 和
 `data/load-test-summary.json`。
 
+多角色（api / publisher / worker / scheduler）与批量 Outbox 框架已具备，
+新架构下的容量数字 **pending measured evidence** — 仅在
+`scripts/performance/run-suite.ps1` 三轮实测并写入 `docs/evidence/` 后，
+才可把中位数填入下表用于对外声明。
+
+## 结果表（待填）
+
+列：round / TPS / P95 / P99 / error% / backlog。默认档位建议
+50 / 100 / 200 / 400 TPS。数值留空表示尚未实测。
+
+### Ingress
+
+| rate | round | TPS | P95 | P99 | error% | backlog |
+|---:|---:|---:|---:|---:|---:|---:|
+| 50 | 1 |  |  |  |  |  |
+| 50 | 2 |  |  |  |  |  |
+| 50 | 3 |  |  |  |  |  |
+| 100 | 1 |  |  |  |  |  |
+| 100 | 2 |  |  |  |  |  |
+| 100 | 3 |  |  |  |  |  |
+| 200 | 1 |  |  |  |  |  |
+| 200 | 2 |  |  |  |  |  |
+| 200 | 3 |  |  |  |  |  |
+| 400 | 1 |  |  |  |  |  |
+| 400 | 2 |  |  |  |  |  |
+| 400 | 3 |  |  |  |  |  |
+
+### Outbox
+
+| rate | round | TPS | P95 | P99 | error% | backlog |
+|---:|---:|---:|---:|---:|---:|---:|
+| 50 | 1 |  |  |  |  |  |
+| 50 | 2 |  |  |  |  |  |
+| 50 | 3 |  |  |  |  |  |
+| 100 | 1 |  |  |  |  |  |
+| 100 | 2 |  |  |  |  |  |
+| 100 | 3 |  |  |  |  |  |
+| 200 | 1 |  |  |  |  |  |
+| 200 | 2 |  |  |  |  |  |
+| 200 | 3 |  |  |  |  |  |
+| 400 | 1 |  |  |  |  |  |
+| 400 | 2 |  |  |  |  |  |
+| 400 | 3 |  |  |  |  |  |
+
+### Worker
+
+| rate | round | TPS | P95 | P99 | error% | backlog |
+|---:|---:|---:|---:|---:|---:|---:|
+| 50 | 1 |  |  |  |  |  |
+| 50 | 2 |  |  |  |  |  |
+| 50 | 3 |  |  |  |  |  |
+| 100 | 1 |  |  |  |  |  |
+| 100 | 2 |  |  |  |  |  |
+| 100 | 3 |  |  |  |  |  |
+| 200 | 1 |  |  |  |  |  |
+| 200 | 2 |  |  |  |  |  |
+| 200 | 3 |  |  |  |  |  |
+| 400 | 1 |  |  |  |  |  |
+| 400 | 2 |  |  |  |  |  |
+| 400 | 3 |  |  |  |  |  |
+
+### End-to-end
+
+| rate | round | TPS | P95 | P99 | error% | backlog |
+|---:|---:|---:|---:|---:|---:|---:|
+| 50 | 1 |  |  |  |  |  |
+| 50 | 2 |  |  |  |  |  |
+| 50 | 3 |  |  |  |  |  |
+| 100 | 1 |  |  |  |  |  |
+| 100 | 2 |  |  |  |  |  |
+| 100 | 3 |  |  |  |  |  |
+| 200 | 1 |  |  |  |  |  |
+| 200 | 2 |  |  |  |  |  |
+| 200 | 3 |  |  |  |  |  |
+| 400 | 1 |  |  |  |  |  |
+| 400 | 2 |  |  |  |  |  |
+| 400 | 3 |  |  |  |  |  |
+
 ## 新的四链路容量实验
 
 `scripts/performance/run-suite.ps1` 将每个负载档位重复三次并保留原始
-证据：
+证据，同时把 markdown 表片段写入 `docs/evidence/`：
 
 1. `ingress`：鉴权、幂等检查、MySQL 事件事务写入，不匹配 Endpoint；
 2. `outbox`：先停止 Publisher 形成 PENDING Outbox，再测批量抢占、并发
@@ -27,8 +105,8 @@ Webhook Endpoint，因此不能代表端到端投递能力：
 4. `e2e`：从 `POST /api/events` 到事件进入
    `COMPLETED/DEAD/PARTIALLY_FAILED`，记录自定义 `eventrelay_e2e_latency`。
 
-默认档位为 25/50/100/200 TPS，每档三次。报告只使用三次运行的中位数，
-同时保留异常轮次。
+水平扩展曲线见 `scripts/performance/run-scaling.ps1` 与
+`docs/evidence/horizontal-scaling-TEMPLATE.md`。
 
 ## 采集项
 
@@ -43,9 +121,6 @@ Webhook Endpoint，因此不能代表端到端投递能力：
 - 事件接入到终态的真实端到端延迟；
 - 测试前后 Prometheus 快照和 Docker stats。
 
-RabbitMQ ready/unacked 的长期图表应由 RabbitMQ Prometheus 插件采集；脚本
-同时保存应用侧队列属性作为交叉验证。
-
 ## 复现
 
 ```powershell
@@ -54,7 +129,7 @@ $env:EVENTRELAY_APP_ID = "demo-order-service"
 $env:EVENTRELAY_API_KEY = $env:WEBHOOK_DEMO_PRODUCER_API_KEY
 $env:EVENTRELAY_ADMIN_APP_ID = "platform-admin"
 $env:EVENTRELAY_ADMIN_API_KEY = $env:WEBHOOK_DEMO_ADMIN_API_KEY
-.\scripts\performance\run-suite.ps1 -Rates 25,50,100,200 -Repetitions 3
+.\scripts\performance\run-suite.ps1 -Rates 50,100,200,400 -Repetitions 3
 ```
 
 压测期间不要同时修改连接池、并发、批量大小和实例数。每轮只改变一个

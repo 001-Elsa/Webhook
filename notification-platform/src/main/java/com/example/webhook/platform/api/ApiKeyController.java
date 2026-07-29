@@ -14,6 +14,8 @@ import org.springframework.web.bind.annotation.*;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -35,6 +37,17 @@ public class ApiKeyController {
         this.credentials = credentials;
         this.hasher = hasher;
         this.audit = audit;
+    }
+
+    @GetMapping
+    public List<Map<String, Object>> list(@PathVariable String appId) {
+        clients.findByAppIdAndTenantIdAndActiveTrue(appId, RequestContext.principal().tenantId())
+                .orElseThrow(() -> new IllegalArgumentException("Client not found: " + appId));
+        return credentials.findByClientAppIdAndClientTenantIdOrderByCreatedAtDesc(
+                        appId, RequestContext.principal().tenantId())
+                .stream()
+                .map(this::redacted)
+                .toList();
     }
 
     @PostMapping
@@ -73,5 +86,25 @@ public class ApiKeyController {
         credentials.save(credential);
         audit.record("API_KEY_REVOKED", "API_CREDENTIAL", credential.getKeyId(), "SUCCESS", null);
         return Map.of("revoked", true, "keyId", credential.getKeyId());
+    }
+
+    private Map<String, Object> redacted(ApiCredential credential) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("id", credential.getId());
+        row.put("keyId", credential.getKeyId());
+        row.put("scopes", credential.getScopes());
+        row.put("status", credential.getStatus().name());
+        row.put("expiresAt", credential.getExpiresAt());
+        row.put("revokedAt", credential.getRevokedAt());
+        row.put("lastUsedAt", credential.getLastUsedAt());
+        row.put("lastUsedIp", credential.getLastUsedIp());
+        row.put("createdAt", credential.getCreatedAt());
+        row.put("apiKeyHash", redactedHash(credential.getApiKeyHash()));
+        return row;
+    }
+
+    private String redactedHash(String hash) {
+        if (hash == null || hash.length() < 8) return "********";
+        return hash.substring(0, 4) + "..." + hash.substring(hash.length() - 4);
     }
 }

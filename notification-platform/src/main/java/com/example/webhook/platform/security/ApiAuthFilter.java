@@ -10,6 +10,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -27,19 +28,25 @@ public class ApiAuthFilter extends OncePerRequestFilter {
     private final ApiCredentialRepository credentialRepository;
     private final ApiKeyHasher apiKeyHasher;
     private final MeterRegistry metrics;
+    private final boolean legacyKeyEnabled;
+    private final Instant legacyKeyDeadline;
 
     /** Compatibility constructor for existing focused tests. */
     public ApiAuthFilter(ApplicationClientRepository clients, ApiKeyHasher hasher, MeterRegistry metrics) {
-        this(clients, null, hasher, metrics);
+        this(clients, null, hasher, metrics, true, "");
     }
 
     @Autowired
     public ApiAuthFilter(ApplicationClientRepository clients, ApiCredentialRepository credentials,
-                         ApiKeyHasher hasher, MeterRegistry metrics) {
+                         ApiKeyHasher hasher, MeterRegistry metrics,
+                         @Value("${webhook.auth.legacy-key-enabled:true}") boolean legacyKeyEnabled,
+                         @Value("${webhook.auth.legacy-key-deadline:}") String legacyKeyDeadline) {
         this.clientRepository = clients;
         this.credentialRepository = credentials;
         this.apiKeyHasher = hasher;
         this.metrics = metrics;
+        this.legacyKeyEnabled = legacyKeyEnabled;
+        this.legacyKeyDeadline = parseDeadline(legacyKeyDeadline);
     }
 
     @Override
@@ -103,12 +110,27 @@ public class ApiAuthFilter extends OncePerRequestFilter {
             }
         }
 
-        // Legacy key remains readable during migration, then can be disabled with client.active.
+        // Legacy ApplicationClient.apiKeyHash path — globally gated for migration cutover.
         if (apiKeyHasher.matches(apiKey, client.getApiKeyHash())) {
+            if (!isLegacyAllowed()) {
+                metrics.counter("webhook.auth.legacy.rejected").increment();
+                return unauthorized(response, "legacy_disabled");
+            }
+            metrics.counter("webhook.auth.legacy.used").increment();
             return new Authenticated(client,
                     client.getRole() == ClientRole.ADMIN ? Set.of("*") : Set.of("event:write"));
         }
         return unauthorized(response, "invalid");
+    }
+
+    private boolean isLegacyAllowed() {
+        if (!legacyKeyEnabled) return false;
+        return legacyKeyDeadline == null || !Instant.now().isAfter(legacyKeyDeadline);
+    }
+
+    private static Instant parseDeadline(String value) {
+        if (value == null || value.isBlank()) return null;
+        return Instant.parse(value.trim());
     }
 
     private Authenticated unauthorized(HttpServletResponse response, String reason) throws IOException {

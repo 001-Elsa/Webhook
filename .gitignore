@@ -9,3 +9,14 @@ target/
 *.iml
 
 *.log
+
+# Python bytecode / caches (never commit)
+__pycache__/
+*.pyc
+*.pyo
+*.py[cod]
+*$py.class
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/

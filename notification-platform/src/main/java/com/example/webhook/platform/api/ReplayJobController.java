@@ -17,8 +17,7 @@ public class ReplayJobController {
 
     @PostMapping
     public ReplayJobResponse create(@Valid @RequestBody CreateReplayJobRequest request) {
-        return ReplayJobResponse.from(jobs.create(request.dryRun(),
-                request.maxDeliveries() == null ? 1000 : request.maxDeliveries()));
+        return ReplayJobResponse.from(jobs.create(request));
     }
 
     @GetMapping

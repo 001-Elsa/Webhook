@@ -12,6 +12,7 @@
 | infrastructure restart | restart MySQL, Redis, RabbitMQ and every role | readiness recovers and durable state remains | `scripts/fault-drill.ps1` JSON evidence |
 
 Run `mvn verify` for deterministic evidence and `scripts/fault-drill.ps1` against
-the Compose environment for a timestamped recovery report. The report records
-injection time, recovery time and outcome; correlate it with database snapshots,
-RabbitMQ queue depth and traces before declaring a drill successful.
+the Compose environment for a timestamped recovery report. Copy
+`docs/evidence/fault-drill-TEMPLATE.md` (or let operators attach the JSON report
+paths) and correlate with database snapshots, RabbitMQ queue depth and traces
+before declaring a drill successful.

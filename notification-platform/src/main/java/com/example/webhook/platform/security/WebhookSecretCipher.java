@@ -1,6 +1,7 @@
 package com.example.webhook.platform.security;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import javax.crypto.Cipher;
@@ -15,11 +16,17 @@ import java.util.Base64;
 public class WebhookSecretCipher {
     private static final int NONCE_BYTES = 12;
     private final KeyManagementService keyManagement;
+    private final EnvelopeEncryptionService envelope;
+    private final boolean envelopeEncryptionEnabled;
     private final SecureRandom random = new SecureRandom();
 
     @Autowired
-    public WebhookSecretCipher(KeyManagementService keyManagement) {
+    public WebhookSecretCipher(KeyManagementService keyManagement,
+                               EnvelopeEncryptionService envelope,
+                               @Value("${webhook.security.envelope-encryption-enabled:true}") boolean envelopeEncryptionEnabled) {
         this.keyManagement = keyManagement;
+        this.envelope = envelope;
+        this.envelopeEncryptionEnabled = envelopeEncryptionEnabled;
     }
 
     /** Compatibility constructor for existing unit tests and embedded use. */
@@ -41,9 +48,21 @@ public class WebhookSecretCipher {
                 return key;
             }
         };
+        this.envelope = new EnvelopeEncryptionService(this.keyManagement);
+        this.envelopeEncryptionEnabled = true;
     }
 
     public String encrypt(String plaintext) {
+        if (envelopeEncryptionEnabled) return envelope.encrypt(plaintext);
+        return encryptDirect(plaintext);
+    }
+
+    public String decrypt(String encoded) {
+        if (envelope != null && envelope.isEnvelope(encoded)) return envelope.decrypt(encoded);
+        return decryptDirect(encoded);
+    }
+
+    private String encryptDirect(String plaintext) {
         if (plaintext == null || plaintext.isBlank()) throw new IllegalArgumentException("Webhook secret is required");
         int version = keyManagement.activeVersion();
         try {
@@ -61,7 +80,7 @@ public class WebhookSecretCipher {
         }
     }
 
-    public String decrypt(String encoded) {
+    private String decryptDirect(String encoded) {
         int version = versionOf(encoded);
         try {
             int separator = encoded.indexOf(':');
@@ -80,7 +99,8 @@ public class WebhookSecretCipher {
     public int activeVersion() { return keyManagement.activeVersion(); }
 
     public int versionOf(String value) {
-        if (!isEncrypted(value)) throw new IllegalStateException("Webhook secret is not encrypted");
+        if (envelope != null && envelope.isEnvelope(value)) return envelope.kekVersionOf(value);
+        if (!isLegacyEncrypted(value)) throw new IllegalStateException("Webhook secret is not encrypted");
         try {
             return Integer.parseInt(value.substring(1, value.indexOf(':')));
         } catch (RuntimeException invalid) {
@@ -89,6 +109,10 @@ public class WebhookSecretCipher {
     }
 
     public boolean isEncrypted(String value) {
+        return (envelope != null && envelope.isEnvelope(value)) || isLegacyEncrypted(value);
+    }
+
+    private boolean isLegacyEncrypted(String value) {
         return value != null && value.matches("^v\\d+:.+");
     }
 }

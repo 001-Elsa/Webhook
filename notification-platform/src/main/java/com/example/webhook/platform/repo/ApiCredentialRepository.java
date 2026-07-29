@@ -15,6 +15,8 @@ import java.util.Optional;
 public interface ApiCredentialRepository extends JpaRepository<ApiCredential, Long> {
     @EntityGraph(attributePaths = "client")
     List<ApiCredential> findByClientAppIdAndStatus(String appId, ApiCredentialStatus status);
+    @EntityGraph(attributePaths = "client")
+    List<ApiCredential> findByClientAppIdAndClientTenantIdOrderByCreatedAtDesc(String appId, String tenantId);
     Optional<ApiCredential> findByIdAndClientTenantId(Long id, String tenantId);
     boolean existsByKeyId(String keyId);
 

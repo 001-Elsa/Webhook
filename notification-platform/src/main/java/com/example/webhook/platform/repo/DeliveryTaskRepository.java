@@ -31,6 +31,27 @@ public interface DeliveryTaskRepository extends JpaRepository<DeliveryTask, Long
     List<DeliveryTask> findByEventTenantIdAndStatusOrderByIdAsc(
             String tenantId, DeliveryStatus status, Pageable pageable);
 
+    @EntityGraph(attributePaths = {"event", "endpoint"})
+    @Query("""
+            select d from DeliveryTask d
+             where d.event.tenantId = :tenantId
+               and d.status = :status
+               and (:endpointId is null or d.endpoint.id = :endpointId)
+               and (:eventType is null or d.event.type = :eventType)
+               and (:failedAfter is null or d.updatedAt >= :failedAfter)
+               and (:failedBefore is null or d.updatedAt < :failedBefore)
+               and (:httpStatus is null or d.lastStatusCode = :httpStatus)
+             order by d.id asc
+            """)
+    List<DeliveryTask> findReplayCandidates(@Param("tenantId") String tenantId,
+                                            @Param("status") DeliveryStatus status,
+                                            @Param("endpointId") Long endpointId,
+                                            @Param("eventType") String eventType,
+                                            @Param("failedAfter") Instant failedAfter,
+                                            @Param("failedBefore") Instant failedBefore,
+                                            @Param("httpStatus") Integer httpStatus,
+                                            Pageable pageable);
+
     Optional<DeliveryTask> findByIdAndEventTenantId(Long id, String tenantId);
 
     long countByEventTenantIdAndStatus(String tenantId, DeliveryStatus status);

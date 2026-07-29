@@ -41,6 +41,13 @@ public class WebhookEndpoint {
     private int circuitCooldownSeconds = 60;
     @Column(nullable = false)
     private int consecutiveFailures;
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20)
+    private CircuitState circuitState = CircuitState.CLOSED;
+    @Column(nullable = false)
+    private int halfOpenProbes;
+    @Column(nullable = false)
+    private int halfOpenMaxProbes = 1;
     private Instant circuitOpenUntil;
     private Instant pausedAt;
     @Column(nullable = false, updatable = false)
@@ -79,6 +86,12 @@ public class WebhookEndpoint {
     public void setCircuitCooldownSeconds(int circuitCooldownSeconds) { this.circuitCooldownSeconds = circuitCooldownSeconds; }
     public int getConsecutiveFailures() { return consecutiveFailures; }
     public void setConsecutiveFailures(int consecutiveFailures) { this.consecutiveFailures = consecutiveFailures; }
+    public CircuitState getCircuitState() { return circuitState; }
+    public void setCircuitState(CircuitState circuitState) { this.circuitState = circuitState; }
+    public int getHalfOpenProbes() { return halfOpenProbes; }
+    public void setHalfOpenProbes(int halfOpenProbes) { this.halfOpenProbes = halfOpenProbes; }
+    public int getHalfOpenMaxProbes() { return halfOpenMaxProbes; }
+    public void setHalfOpenMaxProbes(int halfOpenMaxProbes) { this.halfOpenMaxProbes = halfOpenMaxProbes; }
     public Instant getCircuitOpenUntil() { return circuitOpenUntil; }
     public void setCircuitOpenUntil(Instant circuitOpenUntil) { this.circuitOpenUntil = circuitOpenUntil; }
     public Instant getPausedAt() { return pausedAt; }

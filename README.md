@@ -23,14 +23,16 @@ EventRelay 是一个以 MySQL 为事实来源、提供至少一次投递语义�
 ## 多租户与安全
 
 - 所有控制面查询按 tenant 强制过滤；
-- 租户配额覆盖每秒接入、每日事件、待投递数量、并发和 Payload 存储；
-- 恢复扫描按租户轮询并支持权重，Worker 使用 Tenant + Endpoint 双层
-  Bulkhead；
-- Endpoint 具有独立限流、并发上限、失败阈值、共享熔断状态、暂停/恢复；
+- 租户配额覆盖每秒接入（令牌桶）、每日事件、待投递数量、投递并发和
+  每日 Payload 接入流量（非磁盘存储占用）；
+- 恢复扫描与 Outbox 抢占按租户公平分批并支持调度权重；Worker 使用
+  Tenant + Endpoint 本地 Bulkhead，可选 Redis 集群级租户并发上限；
+- Endpoint 具有独立限流、并发上限、CLOSED/OPEN/HALF_OPEN 共享熔断、
+  暂停/恢复；
 - API Key 使用 PBKDF2 哈希，支持 Key ID、多 Key 并存、Scope、过期、撤销、
-  最后使用时间/IP 和双 Key 平滑轮换；
-- Webhook Secret 使用 AES-256-GCM，密文携带 key version；KeyManagementService
-  可替换为 Vault/KMS，旧新版本可同时读取并后台断点重加密；
+  最后使用时间/IP 和双 Key 平滑轮换；Legacy Key 可通过独立开关与截止时间下线；
+- Webhook Secret 使用 AES-256-GCM；默认 Local KEK + envelope DEK，
+  可选 Vault Transit / AWS KMS 适配器；旧密文可继续解密并后台重加密；
 - 出站 URL 有 SSRF 校验，Webhook 使用 HMAC 签名；
 - 管理操作、ReplayJob 和 AI 诊断均保存租户级审计记录。
 
@@ -51,9 +53,9 @@ shutdown、Rabbit listener shutdown timeout、Publisher drain 和 Kubernetes
 
 ## 可观测性与 SLO
 
-Micrometer、Prometheus、Grafana 和 OpenTelemetry 覆盖 API → MySQL →
-Outbox → RabbitMQ → Worker → Webhook HTTP。消息 observation 会传播 trace
-上下文。关键指标包括：
+Micrometer、Prometheus、Grafana、OpenTelemetry Collector 与 Jaeger 覆盖
+API → MySQL → Outbox → RabbitMQ → Worker → Webhook HTTP。消息 observation
+会传播 trace 上下文。关键指标包括：
 
 - Outbox 数量、最老年龄、批量大小、confirm 延迟、发布线程/队列；
 - Delivery 领取等待、HTTP 总耗时、端到端终态延迟、ready/DEAD；
@@ -69,7 +71,8 @@ Prometheus 规则包含 99.9% 成功率 SLO 的快/慢多窗口 Burn Rate 告警
 不包含 Payload、Secret、API Key、完整响应体或原始栈，只包含脱敏错误、
 状态码、尝试时间线和积压信号。模型输出必须引用有效 evidence ID，否则
 丢弃并回退规则。AI 不能 ACK、重试、修改 Payload 或执行重放，失败不会
-影响投递链路。12 类离线故障集在测试中持续评估。
+影响投递链路。Runbook 采用结构化关键词/章节检索注入上下文（不是向量
+RAG）。12 类离线用例评估的是规则分类器映射，不是大模型准确率。
 
 ## 本地启动
 
@@ -86,6 +89,7 @@ docker compose up -d --build --wait
 - RabbitMQ：<http://localhost:15672>
 - Prometheus：<http://localhost:9090>
 - Grafana：<http://localhost:3000>
+- Jaeger：<http://localhost:16686>
 
 验证：
 
@@ -100,11 +104,16 @@ docker compose config -q
   Worker 和真实端到端链路；每档三次并保留 Prometheus/MySQL/容器原始证据。
 - [Helm Chart](deploy/helm/eventrelay) 包含四角色 Deployment、ConfigMap、
   Secret 引用、startup/readiness/liveness、PDB、HPA、requests/limits、
-  NetworkPolicy、迁移 Job、滚动更新与原子回滚。
-- CI 执行测试/Testcontainers、JaCoCo、Secret 扫描、SBOM、不可变 SHA 镜像、
-  Trivy 漏洞门禁、四角色测试环境部署和真实端到端 Smoke Test。
+  NetworkPolicy、迁移 Job、滚动更新与原子回滚；验收清单见
+  [helm-acceptance.md](docs/helm-acceptance.md)。
+- CI（`.github/workflows/ci.yml`）阶段包括：`mvn verify`（单元/Testcontainers）、
+  Compose 校验、CycloneDX SBOM、Gitleaks Secret 扫描、不可变 SHA 镜像构建、
+  Trivy 门禁、以及测试环境四角色部署与端到端 Smoke。流水线是否当前全绿取决于
+ 最新提交结果，本文不宣称 CI 恒绿。
 - [disaster-recovery.md](docs/disaster-recovery.md) 定义备份、恢复顺序以及
-  尚需演练验证的 RPO/RTO 目标。
+  设计目标 RPO/RTO；实测演练证据使用 `docs/evidence/*-TEMPLATE.md`。
+- 控制面认证以 API Key 为主；OIDC/OAuth2/mTLS 见
+  [auth-roadmap.md](docs/auth-roadmap.md)。
 
 ## 容量声明
 
@@ -116,6 +125,7 @@ P95 220.44 ms、P99 300.48 ms、成功率 100%。历史 200 TPS 实验只达到
 
 ## SDK 与运维工具
 
-`sdk/` 提供 Java、Python、JavaScript 的常量时间签名验证示例；`cli/` 支持
-查询 Delivery、创建 ReplayJob 和只读诊断。事件支持 `schemaVersion`，
-Endpoint 支持受限的确定性订阅过滤表达式，例如 `$.region==cn`。
+`sdk/` 提供 Java、Python、JavaScript 的常量时间签名验证示例（版本 0.1.0，
+未发布到 Maven/PyPI/npm）；`cli/` 支持查询 Delivery、创建 ReplayJob 和
+只读诊断。事件支持 `schemaVersion`，Endpoint 支持受限的确定性订阅过滤
+DSL（字符串/数字/布尔与 `&&`），这不是 Schema Registry。

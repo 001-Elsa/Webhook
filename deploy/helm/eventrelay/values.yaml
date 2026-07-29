@@ -44,6 +44,9 @@ secrets:
 
 networkPolicy:
   enabled: true
+  # LOCAL/DEV DEFAULT ONLY — 0.0.0.0/0 allows workers to reach any public webhook URL.
+  # PRODUCTION MUST override receiverCidrs to the concrete receiver IP ranges (or
+  # private CIDRs) that EventRelay is allowed to call. Do not ship 0.0.0.0/0 to prod.
   receiverCidrs:
     - 0.0.0.0/0
 

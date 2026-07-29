@@ -5,6 +5,7 @@ import com.example.webhook.platform.domain.TenantQuota;
 import com.example.webhook.platform.repo.TenantQuotaRepository;
 import com.example.webhook.platform.security.RequestContext;
 import com.example.webhook.platform.service.AuditService;
+import com.example.webhook.platform.service.TenantQuotaService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
 
@@ -12,10 +13,12 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/tenant/quota")
 public class TenantQuotaController {
     private final TenantQuotaRepository quotas;
+    private final TenantQuotaService quotaService;
     private final AuditService audit;
 
-    public TenantQuotaController(TenantQuotaRepository quotas, AuditService audit) {
+    public TenantQuotaController(TenantQuotaRepository quotas, TenantQuotaService quotaService, AuditService audit) {
         this.quotas = quotas;
+        this.quotaService = quotaService;
         this.audit = audit;
     }
 
@@ -35,9 +38,13 @@ public class TenantQuotaController {
         quota.setMaxPendingDeliveries(request.maxPendingDeliveries());
         quota.setMaxConcurrentDeliveries(request.maxConcurrentDeliveries());
         quota.setDailyEventLimit(request.dailyEventLimit());
-        quota.setPayloadStorageBytes(request.payloadStorageBytes());
+        quota.setDailyPayloadBytes(request.dailyPayloadBytes());
         quota.setSchedulingWeight(request.schedulingWeight());
+        if (request.attemptRetentionDays() != null) {
+            quota.setAttemptRetentionDays(request.attemptRetentionDays());
+        }
         TenantQuota saved = quotas.save(quota);
+        quotaService.invalidateCache(saved.getTenantId());
         audit.record("TENANT_QUOTA_UPDATED", "TENANT_QUOTA", saved.getTenantId(), "SUCCESS", null);
         return saved;
     }

@@ -1,0 +1,88 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "title": "Ingress TPS (POST /api/events)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(http_server_requests_seconds_count{uri=\"/api/events\",method=\"POST\",outcome=\"SUCCESS\"}[1m])) or vector(0)",
+          "legendFormat": "ingress success/s",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "title": "Outbox backlog",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "webhook_outbox_pending or vector(0)",
+          "legendFormat": "pending",
+          "refId": "A"
+        },
+        {
+          "expr": "webhook_outbox_oldest_age_seconds or vector(0)",
+          "legendFormat": "oldest age (s)",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "id": 3,
+      "title": "Delivery success / fail",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(webhook_delivery_success_total[1m])) or vector(0)",
+          "legendFormat": "success/s",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(webhook_delivery_failure_total[1m])) or vector(0)",
+          "legendFormat": "fail/s",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "id": 4,
+      "title": "Circuit opens",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(webhook_endpoint_circuit_opened_total[1m])) or vector(0)",
+          "legendFormat": "opens/s",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["eventrelay"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timezone": "browser",
+  "title": "EventRelay Overview",
+  "uid": "eventrelay-overview",
+  "version": 1
+}

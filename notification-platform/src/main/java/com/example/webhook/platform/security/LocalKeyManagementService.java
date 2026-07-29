@@ -2,6 +2,7 @@ package com.example.webhook.platform.security;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import javax.crypto.SecretKey;
@@ -11,10 +12,11 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Development provider. Format: "1:base64Key,2:base64Key". Production can
- * replace this bean with a Vault/KMS implementation without changing ciphertext.
+ * Default local KEK provider. Format: "1:base64Key,2:base64Key".
+ * Production can switch to Vault Transit / AWS KMS via webhook.security.kms-provider.
  */
 @Component
+@ConditionalOnProperty(name = "webhook.security.kms-provider", havingValue = "local", matchIfMissing = true)
 public class LocalKeyManagementService implements KeyManagementService {
     private final Map<Integer, SecretKey> keys;
     private final int activeVersion;

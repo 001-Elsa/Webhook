@@ -23,6 +23,7 @@ public class ReplayJob {
     @Column(length = 80) private String approvedBy;
     private Instant approvedAt;
     @Column(columnDefinition = "TEXT") private String filterJson;
+    @Column(columnDefinition = "TEXT") private String resultSummaryJson;
     @Column(length = 1000) private String lastError;
     @Column(nullable = false, updatable = false) private Instant createdAt = Instant.now();
     private Instant startedAt;
@@ -57,6 +58,8 @@ public class ReplayJob {
     public void setApprovedAt(Instant approvedAt) { this.approvedAt = approvedAt; }
     public String getFilterJson() { return filterJson; }
     public void setFilterJson(String filterJson) { this.filterJson = filterJson; }
+    public String getResultSummaryJson() { return resultSummaryJson; }
+    public void setResultSummaryJson(String resultSummaryJson) { this.resultSummaryJson = resultSummaryJson; }
     public String getLastError() { return lastError; }
     public void setLastError(String lastError) { this.lastError = lastError; }
     public Instant getCreatedAt() { return createdAt; }

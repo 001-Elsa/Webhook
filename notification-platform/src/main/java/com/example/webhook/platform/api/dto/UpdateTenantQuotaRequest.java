@@ -8,6 +8,7 @@ public record UpdateTenantQuotaRequest(
         @Min(1) long maxPendingDeliveries,
         @Min(1) @Max(10000) int maxConcurrentDeliveries,
         @Min(1) long dailyEventLimit,
-        @Min(1024) long payloadStorageBytes,
-        @Min(1) @Max(100) int schedulingWeight
+        @Min(1024) long dailyPayloadBytes,
+        @Min(1) @Max(100) int schedulingWeight,
+        @Min(1) @Max(3650) Integer attemptRetentionDays
 ) { }

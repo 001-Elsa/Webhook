@@ -11,8 +11,11 @@ public class TenantQuota {
     private long maxPendingDeliveries = 100_000;
     private int maxConcurrentDeliveries = 32;
     private long dailyEventLimit = 1_000_000;
-    private long payloadStorageBytes = 1_073_741_824L;
+    /** Daily payload ingress traffic budget (not durable storage). */
+    @Column(name = "payload_storage_bytes")
+    private long dailyPayloadBytes = 1_073_741_824L;
     private int schedulingWeight = 1;
+    private int attemptRetentionDays = 30;
 
     public String getTenantId() { return tenantId; }
     public void setTenantId(String tenantId) { this.tenantId = tenantId; }
@@ -24,8 +27,10 @@ public class TenantQuota {
     public void setMaxConcurrentDeliveries(int maxConcurrentDeliveries) { this.maxConcurrentDeliveries = maxConcurrentDeliveries; }
     public long getDailyEventLimit() { return dailyEventLimit; }
     public void setDailyEventLimit(long dailyEventLimit) { this.dailyEventLimit = dailyEventLimit; }
-    public long getPayloadStorageBytes() { return payloadStorageBytes; }
-    public void setPayloadStorageBytes(long payloadStorageBytes) { this.payloadStorageBytes = payloadStorageBytes; }
+    public long getDailyPayloadBytes() { return dailyPayloadBytes; }
+    public void setDailyPayloadBytes(long dailyPayloadBytes) { this.dailyPayloadBytes = dailyPayloadBytes; }
     public int getSchedulingWeight() { return schedulingWeight; }
     public void setSchedulingWeight(int schedulingWeight) { this.schedulingWeight = schedulingWeight; }
+    public int getAttemptRetentionDays() { return attemptRetentionDays; }
+    public void setAttemptRetentionDays(int attemptRetentionDays) { this.attemptRetentionDays = attemptRetentionDays; }
 }

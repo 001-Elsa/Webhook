@@ -99,6 +99,18 @@ webhook:
     encryption-keys: ${WEBHOOK_ENCRYPTION_KEYS:}
     active-key-version: ${WEBHOOK_ACTIVE_KEY_VERSION:1}
     reencrypt-delay-ms: ${WEBHOOK_SECRET_REENCRYPT_DELAY_MS:60000}
+    envelope-encryption-enabled: ${WEBHOOK_ENVELOPE_ENCRYPTION_ENABLED:true}
+    kms-provider: ${WEBHOOK_KMS_PROVIDER:local}
+    vault:
+      addr: ${VAULT_ADDR:}
+      token: ${VAULT_TOKEN:}
+      mount: ${VAULT_TRANSIT_MOUNT:transit}
+      transit-key: ${VAULT_TRANSIT_KEY:eventrelay}
+    aws:
+      kms-key-id: ${AWS_KMS_KEY_ID:}
+  auth:
+    legacy-key-enabled: ${WEBHOOK_AUTH_LEGACY_KEY_ENABLED:true}
+    legacy-key-deadline: ${WEBHOOK_AUTH_LEGACY_KEY_DEADLINE:}
   outbox:
     fixed-delay-ms: ${WEBHOOK_OUTBOX_FIXED_DELAY_MS:250}
     batch-size: ${WEBHOOK_OUTBOX_BATCH_SIZE:100}
@@ -111,6 +123,8 @@ webhook:
     batch-size: ${WEBHOOK_EVENT_RECONCILER_BATCH_SIZE:200}
   queue:
     recovery-batch-size: 100
+  tenant:
+    global-concurrency-enabled: ${WEBHOOK_TENANT_GLOBAL_CONCURRENCY_ENABLED:false}
   retry:
     base-delay-seconds: ${WEBHOOK_RETRY_BASE_DELAY_SECONDS:5}
     max-delay-seconds: ${WEBHOOK_RETRY_MAX_DELAY_SECONDS:300}
@@ -118,6 +132,8 @@ webhook:
   replay:
     approval-required: ${WEBHOOK_REPLAY_APPROVAL_REQUIRED:true}
     poll-delay-ms: ${WEBHOOK_REPLAY_POLL_DELAY_MS:2000}
+    max-per-second: ${WEBHOOK_REPLAY_MAX_PER_SECOND:20}
+    dry-run-preview-limit: ${WEBHOOK_REPLAY_DRY_RUN_PREVIEW_LIMIT:50}
   ai:
     enabled: ${WEBHOOK_AI_ENABLED:false}
     endpoint: ${WEBHOOK_AI_ENDPOINT:http://localhost:8099/v1/diagnose}
@@ -128,6 +144,10 @@ webhook:
   retention:
     delivery-attempt-days: ${DELIVERY_ATTEMPT_RETENTION_DAYS:30}
     outbox-days: ${OUTBOX_RETENTION_DAYS:7}
+    event-days: ${EVENT_RETENTION_DAYS:90}
+    purge-events-enabled: ${WEBHOOK_RETENTION_PURGE_EVENTS_ENABLED:false}
+    archive-batch-size: ${WEBHOOK_RETENTION_ARCHIVE_BATCH_SIZE:1000}
+    purge-batch-size: ${WEBHOOK_RETENTION_PURGE_BATCH_SIZE:500}
     cleanup-cron: "0 30 3 * * *"
 
 eventrelay:

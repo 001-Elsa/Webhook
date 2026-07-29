@@ -312,8 +312,7 @@ public class DeliveryService {
                 deliveryStateMachine.transition(task, DeliveryStatus.SUCCEEDED);
                 task.setLastError(null);
                 task.setLastStatusCode(result.statusCode);
-                task.getEndpoint().setConsecutiveFailures(0);
-                task.getEndpoint().setCircuitOpenUntil(null);
+                closeCircuit(task.getEndpoint());
             } else if (result.outcome == Outcome.DEAD) {
                 deliveryStateMachine.transition(task, DeliveryStatus.DEAD);
                 task.setLastError(result.errorMessage);
@@ -345,11 +344,33 @@ public class DeliveryService {
     }
 
     private void recordEndpointFailure(WebhookEndpoint endpoint) {
+        if (endpoint.getCircuitState() == CircuitState.HALF_OPEN) {
+            openCircuit(endpoint);
+            return;
+        }
         int failures = endpoint.getConsecutiveFailures() + 1;
         endpoint.setConsecutiveFailures(failures);
         if (failures >= endpoint.getFailureThreshold()) {
-            endpoint.setCircuitOpenUntil(Instant.now().plusSeconds(endpoint.getCircuitCooldownSeconds()));
-            meterRegistry.counter("webhook.endpoint.circuit.opened").increment();
+            openCircuit(endpoint);
+        }
+    }
+
+    private void openCircuit(WebhookEndpoint endpoint) {
+        endpoint.setCircuitState(CircuitState.OPEN);
+        endpoint.setCircuitOpenUntil(Instant.now().plusSeconds(endpoint.getCircuitCooldownSeconds()));
+        endpoint.setHalfOpenProbes(0);
+        meterRegistry.counter("webhook.endpoint.circuit.opened").increment();
+        meterRegistry.counter("webhook.endpoint.circuit.state", "state", "OPEN").increment();
+    }
+
+    private void closeCircuit(WebhookEndpoint endpoint) {
+        CircuitState previous = endpoint.getCircuitState();
+        endpoint.setConsecutiveFailures(0);
+        endpoint.setCircuitOpenUntil(null);
+        endpoint.setCircuitState(CircuitState.CLOSED);
+        endpoint.setHalfOpenProbes(0);
+        if (previous != null && previous != CircuitState.CLOSED) {
+            meterRegistry.counter("webhook.endpoint.circuit.state", "state", "CLOSED").increment();
         }
     }
 

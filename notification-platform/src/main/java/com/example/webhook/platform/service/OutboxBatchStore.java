@@ -19,10 +19,12 @@ import java.util.List;
 public class OutboxBatchStore {
     private final JdbcTemplate jdbc;
     private final OutboxMessageRepository repository;
+    private final TenantQuotaService tenantQuotas;
 
-    public OutboxBatchStore(JdbcTemplate jdbc, OutboxMessageRepository repository) {
+    public OutboxBatchStore(JdbcTemplate jdbc, OutboxMessageRepository repository, TenantQuotaService tenantQuotas) {
         this.jdbc = jdbc;
         this.repository = repository;
+        this.tenantQuotas = tenantQuotas;
     }
 
     @Transactional
@@ -41,12 +43,18 @@ public class OutboxBatchStore {
                  limit ?
                 """, String.class, Timestamp.from(now), Timestamp.from(now), batchSize);
         if (tenants.isEmpty()) return List.of();
-        int fairShare = Math.max(1, Math.min(maxPerTenant,
-                (batchSize + tenants.size() - 1) / tenants.size()));
+        int totalWeight = 0;
+        int[] weights = new int[tenants.size()];
+        for (int i = 0; i < tenants.size(); i++) {
+            weights[i] = Math.max(1, tenantQuotas.schedulingWeight(tenants.get(i)));
+            totalWeight += weights[i];
+        }
         List<Long> ids = new ArrayList<>(batchSize);
-        for (String tenant : tenants) {
+        for (int i = 0; i < tenants.size(); i++) {
             int remaining = batchSize - ids.size();
             if (remaining == 0) break;
+            int fairShare = Math.max(1, Math.min(maxPerTenant,
+                    (batchSize * weights[i] + totalWeight - 1) / totalWeight));
             ids.addAll(jdbc.queryForList("""
                     select o.id
                       from outbox_messages o
@@ -59,7 +67,7 @@ public class OutboxBatchStore {
                      order by o.next_attempt_at, o.id
                      limit ?
                      for update skip locked
-                    """, Long.class, tenant, Timestamp.from(now), Timestamp.from(now),
+                    """, Long.class, tenants.get(i), Timestamp.from(now), Timestamp.from(now),
                     Math.min(fairShare, remaining)));
         }
         if (ids.isEmpty()) return List.of();

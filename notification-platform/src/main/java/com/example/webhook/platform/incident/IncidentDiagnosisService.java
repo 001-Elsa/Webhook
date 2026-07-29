@@ -1,5 +1,6 @@
 package com.example.webhook.platform.incident;
 
+import com.example.webhook.platform.domain.CircuitState;
 import com.example.webhook.platform.domain.IncidentDiagnosisRecord;
 import com.example.webhook.platform.repo.*;
 import com.example.webhook.platform.queue.RabbitTopology;
@@ -8,10 +9,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.amqp.core.AmqpAdmin;
 import org.springframework.amqp.rabbit.core.RabbitAdmin;
-import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Service;
 
-import java.nio.charset.StandardCharsets;
 import java.util.*;
 
 @Service
@@ -25,12 +24,13 @@ public class IncidentDiagnosisService {
     private final ObjectMapper json;
     private final AmqpAdmin rabbit;
     private final MeterRegistry metrics;
-    private final String runbook;
+    private final RunbookRetriever runbookRetriever;
 
     public IncidentDiagnosisService(DeliveryTaskRepository deliveries, DeliveryAttemptRepository attempts,
                                     OutboxMessageRepository outbox, IncidentDiagnosisRepository diagnoses,
                                     List<IncidentAdvisor> advisors, SensitiveDataRedactor redactor,
-                                    ObjectMapper json, AmqpAdmin rabbit, MeterRegistry metrics) {
+                                    ObjectMapper json, AmqpAdmin rabbit, MeterRegistry metrics,
+                                    RunbookRetriever runbookRetriever) {
         this.deliveries = deliveries;
         this.attempts = attempts;
         this.outbox = outbox;
@@ -40,7 +40,7 @@ public class IncidentDiagnosisService {
         this.json = json;
         this.rabbit = rabbit;
         this.metrics = metrics;
-        this.runbook = loadRunbook();
+        this.runbookRetriever = runbookRetriever;
     }
 
     public IncidentDiagnosis diagnose(Long deliveryId) {
@@ -67,11 +67,22 @@ public class IncidentDiagnosisService {
                                 + "; error=" + redactor.redact(attempt.getErrorMessage()))));
 
         Map<String, Number> signals = rabbitSignals();
+        long backlog = outbox.countByStatus(com.example.webhook.platform.domain.OutboxStatus.PENDING);
+        boolean paused = task.getEndpoint().getPausedAt() != null;
+        CircuitState circuitState = task.getEndpoint().getCircuitState();
+        boolean circuitOpen = circuitState == CircuitState.OPEN
+                || circuitState == CircuitState.HALF_OPEN
+                || (circuitState == null && task.getEndpoint().getCircuitOpenUntil() != null);
+        String runbookExcerpt = runbookRetriever.retrieve(new RunbookRetriever.IncidentSignals(
+                task.getLastStatusCode(),
+                task.getStatus().name(),
+                task.getLastError() == null ? null : redactor.redact(task.getLastError()),
+                backlog,
+                circuitOpen,
+                paused));
         IncidentContext context = new IncidentContext(deliveryId, tenant, task.getStatus().name(),
-                task.getLastStatusCode(), task.getAttemptCount(), task.getEndpoint().getPausedAt() != null,
-                task.getEndpoint().getCircuitOpenUntil() != null, outbox.countByStatus(
-                com.example.webhook.platform.domain.OutboxStatus.PENDING), List.copyOf(evidence),
-                signals, runbook);
+                task.getLastStatusCode(), task.getAttemptCount(), paused, circuitOpen, backlog,
+                List.copyOf(evidence), signals, runbookExcerpt);
 
         IncidentDiagnosis diagnosis = advisors.stream()
                 .map(advisor -> advisor.diagnose(context))
@@ -127,13 +138,4 @@ public class IncidentDiagnosisService {
     }
 
     private Number number(Object value) { return value instanceof Number number ? number : 0; }
-
-    private String loadRunbook() {
-        try {
-            return new ClassPathResource("runbooks/incident-control-plane.md")
-                    .getContentAsString(StandardCharsets.UTF_8);
-        } catch (Exception failure) {
-            return "No runbook excerpt available.";
-        }
-    }
 }
