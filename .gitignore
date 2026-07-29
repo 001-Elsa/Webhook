@@ -9,6 +9,12 @@ target/
 *.iml
 
 *.log
+*.log.zip
+
+# Temporary CI diagnostics (never commit)
+alerts.json
+annotations.json
+jobs*.json
 
 # Python bytecode / caches (never commit)
 __pycache__/
