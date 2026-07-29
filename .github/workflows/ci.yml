@@ -79,7 +79,8 @@ jobs:
           tags: |
             eventrelay:${{ github.sha }}
             ${{ env.IMAGE }}:${{ github.sha }}
-      # SARIF always uploaded; gate fails only on fixable CRITICAL (base-image HIGH noise).
+      # SARIF covers OS+library HIGH/CRITICAL. Fail only on fixable app-library CRITICAL
+      # so Temurin/Ubuntu base-image noise does not block releases.
       - name: Trivy vulnerability scan (SARIF)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -92,13 +93,14 @@ jobs:
       - uses: github/codeql-action/upload-sarif@v3
         if: always()
         with: { sarif_file: trivy-results.sarif }
-      - name: Trivy CRITICAL gate
+      - name: Trivy CRITICAL gate (application libraries)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: eventrelay:${{ github.sha }}
           format: table
           severity: CRITICAL
           ignore-unfixed: true
+          vuln-type: library
           exit-code: "1"
       - name: Push immutable image
         if: github.event_name != 'pull_request'
