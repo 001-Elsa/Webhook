@@ -25,6 +25,9 @@ public class ReplayJob {
     @Column(columnDefinition = "TEXT") private String filterJson;
     @Column(columnDefinition = "TEXT") private String resultSummaryJson;
     @Column(length = 1000) private String lastError;
+    @Column(length = 120) private String lockedBy;
+    private Instant lockedUntil;
+    private Instant heartbeatAt;
     @Column(nullable = false, updatable = false) private Instant createdAt = Instant.now();
     private Instant startedAt;
     private Instant completedAt;
@@ -62,6 +65,12 @@ public class ReplayJob {
     public void setResultSummaryJson(String resultSummaryJson) { this.resultSummaryJson = resultSummaryJson; }
     public String getLastError() { return lastError; }
     public void setLastError(String lastError) { this.lastError = lastError; }
+    public String getLockedBy() { return lockedBy; }
+    public void setLockedBy(String lockedBy) { this.lockedBy = lockedBy; }
+    public Instant getLockedUntil() { return lockedUntil; }
+    public void setLockedUntil(Instant lockedUntil) { this.lockedUntil = lockedUntil; }
+    public Instant getHeartbeatAt() { return heartbeatAt; }
+    public void setHeartbeatAt(Instant heartbeatAt) { this.heartbeatAt = heartbeatAt; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getStartedAt() { return startedAt; }
     public void setStartedAt(Instant startedAt) { this.startedAt = startedAt; }

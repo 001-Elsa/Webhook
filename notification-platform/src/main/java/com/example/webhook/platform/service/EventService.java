@@ -17,6 +17,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import io.micrometer.tracing.Tracer;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -32,20 +33,29 @@ public class EventService {
     private final EventIdempotencyStore idempotencyStore;
     private final EventStateMachine eventStateMachine;
     private final TenantQuotaService quotaService;
+    private final Tracer tracer;
 
     public EventService(ObjectMapper objectMapper, EventRecordRepository eventRepository,
                         WebhookEndpointRepository endpointRepository, DeliveryTaskRepository deliveryRepository,
                         EndpointMatcher matcher, OutboxService outboxService, EventIdempotencyStore idempotencyStore,
                         EventStateMachine eventStateMachine) {
         this(objectMapper, eventRepository, endpointRepository, deliveryRepository, matcher, outboxService,
-                idempotencyStore, eventStateMachine, null);
+                idempotencyStore, eventStateMachine, null, null);
+    }
+
+    public EventService(ObjectMapper objectMapper, EventRecordRepository eventRepository,
+                        WebhookEndpointRepository endpointRepository, DeliveryTaskRepository deliveryRepository,
+                        EndpointMatcher matcher, OutboxService outboxService, EventIdempotencyStore idempotencyStore,
+                        EventStateMachine eventStateMachine, TenantQuotaService quotaService) {
+        this(objectMapper, eventRepository, endpointRepository, deliveryRepository, matcher, outboxService,
+                idempotencyStore, eventStateMachine, quotaService, null);
     }
 
     @Autowired
     public EventService(ObjectMapper objectMapper, EventRecordRepository eventRepository,
                         WebhookEndpointRepository endpointRepository, DeliveryTaskRepository deliveryRepository,
                         EndpointMatcher matcher, OutboxService outboxService, EventIdempotencyStore idempotencyStore,
-                        EventStateMachine eventStateMachine, TenantQuotaService quotaService) {
+                        EventStateMachine eventStateMachine, TenantQuotaService quotaService, Tracer tracer) {
         this.objectMapper = objectMapper;
         this.eventRepository = eventRepository;
         this.endpointRepository = endpointRepository;
@@ -55,6 +65,7 @@ public class EventService {
         this.idempotencyStore = idempotencyStore;
         this.eventStateMachine = eventStateMachine;
         this.quotaService = quotaService;
+        this.tracer = tracer;
     }
 
     @Transactional
@@ -108,7 +119,9 @@ public class EventService {
             task.setEndpoint(endpoint);
             task.setNextAttemptAt(Instant.now());
             deliveryRepository.save(task);
-            outboxService.add(task.getId(), OutboxMessageType.DELIVERY, 0);
+            String traceParent = currentTraceParent();
+            if (traceParent == null) outboxService.add(task.getId(), OutboxMessageType.DELIVERY, 0);
+            else outboxService.add(task.getId(), OutboxMessageType.DELIVERY, 0, traceParent);
         }
         rememberAfterCommit(principal.tenantId(), eventId);
         return new EventSubmitResponse(eventId, endpoints.size(), false);
@@ -130,5 +143,14 @@ public class EventService {
         } catch (Exception ex) {
             throw new IllegalArgumentException("Event payload is not valid JSON", ex);
         }
+    }
+
+    private String currentTraceParent() {
+        if (tracer == null || tracer.currentSpan() == null) return null;
+        var context = tracer.currentSpan().context();
+        String traceId = context.traceId();
+        String spanId = context.spanId();
+        if (!traceId.matches("[0-9a-fA-F]{32}") || !spanId.matches("[0-9a-fA-F]{16}")) return null;
+        return "00-" + traceId.toLowerCase() + "-" + spanId.toLowerCase() + "-01";
     }
 }

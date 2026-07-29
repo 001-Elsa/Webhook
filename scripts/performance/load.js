@@ -1,9 +1,13 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
-import { Trend, Rate } from 'k6/metrics';
+import { Counter, Trend, Rate } from 'k6/metrics';
 
-const profile = __ENV.EVENTRELAY_PROFILE || 'ingress';
+const profile = __ENV.EVENTRELAY_PROFILE || 'e2e';
+const eventType = __ENV.EVENTRELAY_EVENT_TYPE || 'performance.e2e';
+const submitLatency = new Trend('eventrelay_submit_latency', true);
 const e2eLatency = new Trend('eventrelay_e2e_latency', true);
+const submitted = new Counter('eventrelay_event_submits');
+const submitFailure = new Rate('eventrelay_submit_failure');
 const terminalFailure = new Rate('eventrelay_terminal_failure');
 
 export const options = {
@@ -37,12 +41,14 @@ const adminHeaders = {
 
 export default function () {
   const eventId = `perf-${profile}-${__VU}-${__ITER}-${Date.now()}`;
-  const eventType = profile === 'ingress' ? 'performance.unmatched' : 'order.created';
   const started = Date.now();
   const response = http.post('http://localhost:8080/api/events',
     JSON.stringify({ eventId, type: eventType, data: { id: eventId, profile } }),
     { headers: producerHeaders, tags: { chain: profile } });
   check(response, { accepted: (r) => r.status === 200 });
+  submitted.add(1);
+  submitLatency.add(response.timings.duration);
+  submitFailure.add(response.status !== 200);
   if (profile !== 'e2e' || response.status !== 200) return;
 
   const deadline = Date.now() + Number(__ENV.EVENTRELAY_E2E_TIMEOUT_MS || 30000);

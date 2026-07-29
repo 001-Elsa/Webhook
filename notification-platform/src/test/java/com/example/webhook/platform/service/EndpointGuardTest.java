@@ -15,8 +15,14 @@ import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
@@ -66,7 +72,16 @@ class EndpointGuardTest {
         endpoint.setCircuitOpenUntil(Instant.now().minusSeconds(1));
         endpoint.setHalfOpenMaxProbes(1);
         when(endpoints.findById(3L)).thenReturn(Optional.of(endpoint));
-        when(endpoints.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(endpoints.transitionOpenToHalfOpen(eq(3L), eq(CircuitState.OPEN),
+                eq(CircuitState.HALF_OPEN), any())).thenAnswer(invocation -> {
+            endpoint.setCircuitState(CircuitState.HALF_OPEN);
+            endpoint.setHalfOpenProbes(0);
+            return 1;
+        });
+        when(endpoints.acquireHalfOpenProbe(3L, CircuitState.HALF_OPEN, 1)).thenAnswer(invocation -> {
+            endpoint.setHalfOpenProbes(1);
+            return 1;
+        });
 
         EndpointGuard.Permit permit = guard.tryAcquire("t1", endpoint);
 
@@ -84,6 +99,7 @@ class EndpointGuardTest {
         endpoint.setHalfOpenMaxProbes(1);
         endpoint.setHalfOpenProbes(1);
         when(endpoints.findById(4L)).thenReturn(Optional.of(endpoint));
+        when(endpoints.acquireHalfOpenProbe(4L, CircuitState.HALF_OPEN, 1)).thenReturn(0);
 
         EndpointGuard.Permit permit = guard.tryAcquire("t1", endpoint);
 
@@ -124,6 +140,44 @@ class EndpointGuardTest {
         assertThat(metrics.counter("webhook.tenant.bulkhead.degraded", "dependency", "redis").count())
                 .isEqualTo(1.0);
         permit.close();
+    }
+
+    @Test
+    void grantsExactlyOneProbeWhenTwentyWorkersRaceForHalfOpenEndpoint() throws Exception {
+        WebhookEndpoint endpoint = endpoint(7L, CircuitState.HALF_OPEN);
+        endpoint.setHalfOpenMaxProbes(1);
+        when(endpoints.findById(7L)).thenReturn(Optional.of(endpoint));
+        AtomicInteger probes = new AtomicInteger();
+        when(endpoints.acquireHalfOpenProbe(7L, CircuitState.HALF_OPEN, 1)).thenAnswer(invocation ->
+                probes.compareAndSet(0, 1) ? 1 : 0);
+
+        ExecutorService pool = Executors.newFixedThreadPool(20);
+        CountDownLatch ready = new CountDownLatch(20);
+        CountDownLatch start = new CountDownLatch(1);
+        List<EndpointGuard.Permit> permits = new ArrayList<>();
+        try {
+            for (int i = 0; i < 20; i++) {
+                pool.submit(() -> {
+                    ready.countDown();
+                    try {
+                        start.await();
+                        EndpointGuard.Permit permit = guard.tryAcquire("t1", endpoint);
+                        synchronized (permits) { permits.add(permit); }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+            }
+            assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            pool.shutdown();
+            assertThat(pool.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(permits.stream().filter(EndpointGuard.Permit::acquired)).hasSize(1);
+            assertThat(probes.get()).isEqualTo(1);
+        } finally {
+            permits.forEach(EndpointGuard.Permit::close);
+            pool.shutdownNow();
+        }
     }
 
     private static WebhookEndpoint endpoint(Long id, CircuitState state) {

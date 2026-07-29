@@ -146,7 +146,10 @@ public class OutboxPublisher {
     private void send(OutboxMessage message) {
         switch (message.getMessageType()) {
             // RETRY is released by MySQL next_attempt_at and uses the normal queue.
-            case DELIVERY, RECOVERY, RETRY -> queue.enqueue(message.getDeliveryId());
+            case DELIVERY, RECOVERY, RETRY -> {
+                if (message.getTraceParent() == null) queue.enqueue(message.getDeliveryId());
+                else queue.enqueue(message.getDeliveryId(), message.getTraceParent());
+            }
             case DEAD -> queue.enqueueDead(message.getDeliveryId());
         }
     }

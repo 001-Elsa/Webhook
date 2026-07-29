@@ -32,6 +32,7 @@ import java.util.function.Consumer;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
@@ -88,10 +89,11 @@ class ReplayJobServiceTest {
         when(jobs.findByIdAndTenantId(12L, "tenant-a")).thenReturn(Optional.of(awaiting));
         when(jobs.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
         when(jobs.findTop100ByTenantIdOrderByCreatedAtDesc("tenant-a")).thenReturn(List.of(awaiting));
+        RequestContext.set(new ApiPrincipal("tenant-a", "admin-b", ClientRole.ADMIN, Set.of("*")), "trace-2");
 
         ReplayJob approved = service.approve(12L);
         assertThat(approved.getStatus()).isEqualTo(ReplayJobStatus.PENDING);
-        assertThat(approved.getApprovedBy()).isEqualTo("admin-a");
+        assertThat(approved.getApprovedBy()).isEqualTo("admin-b");
         assertThat(approved.getApprovedAt()).isNotNull();
         assertThat(service.get(12L)).isSameAs(awaiting);
         assertThat(service.list()).containsExactly(awaiting);
@@ -100,6 +102,16 @@ class ReplayJobServiceTest {
         assertThat(cancelled.getStatus()).isEqualTo(ReplayJobStatus.CANCELLED);
         assertThat(cancelled.isCancellationRequested()).isTrue();
         assertThat(cancelled.getCompletedAt()).isNotNull();
+    }
+
+    @Test
+    void approveRejectsTheJobCreator() {
+        ReplayJob awaiting = job(16L, ReplayJobStatus.AWAITING_APPROVAL, false);
+        when(jobs.findByIdAndTenantId(16L, "tenant-a")).thenReturn(Optional.of(awaiting));
+
+        assertThatThrownBy(() -> service.approve(16L))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("creator cannot approve");
     }
 
     @Test
@@ -131,8 +143,13 @@ class ReplayJobServiceTest {
             TransactionCallback<Integer> callback = invocation.getArgument(0);
             return callback.doInTransaction(null);
         });
-        when(jobs.claimPending(eq(14L), any(), eq(ReplayJobStatus.RUNNING),
-                eq(ReplayJobStatus.PENDING))).thenReturn(1);
+        when(jobs.claimPending(eq(14L), any(), any(), anyString(), eq(ReplayJobStatus.RUNNING),
+                eq(ReplayJobStatus.PENDING))).thenAnswer(invocation -> {
+            dryRun.setStatus(ReplayJobStatus.RUNNING);
+            dryRun.setLockedBy(invocation.getArgument(3));
+            return 1;
+        });
+        when(jobs.heartbeat(eq(14L), anyString(), any(), any(), eq(ReplayJobStatus.RUNNING))).thenReturn(1);
         when(jobs.findById(14L)).thenReturn(Optional.of(dryRun));
         when(deliveries.findReplayCandidates(eq("tenant-a"), any(), eq(7L),
                 eq("order.created"), any(), any(), eq(503), any()))
@@ -146,7 +163,7 @@ class ReplayJobServiceTest {
 
         service.runNext();
 
-        verify(jobs).claimPending(eq(14L), any(), eq(ReplayJobStatus.RUNNING),
+        verify(jobs).claimPending(eq(14L), any(), any(), anyString(), eq(ReplayJobStatus.RUNNING),
                 eq(ReplayJobStatus.PENDING));
         assertThat(dryRun.getStatus()).isEqualTo(ReplayJobStatus.COMPLETED);
         assertThat(dryRun.getProcessedCount()).isEqualTo(1);
@@ -167,13 +184,24 @@ class ReplayJobServiceTest {
             TransactionCallback<Integer> callback = invocation.getArgument(0);
             return callback.doInTransaction(null);
         });
-        when(jobs.claimPending(eq(15L), any(), eq(ReplayJobStatus.RUNNING),
+        when(jobs.claimPending(eq(15L), any(), any(), anyString(), eq(ReplayJobStatus.RUNNING),
                 eq(ReplayJobStatus.PENDING))).thenReturn(0);
 
         service.runNext();
         service.runNext();
 
         verify(jobs, never()).findById(any());
+    }
+
+    @Test
+    void schedulerRecoversExpiredRunningJobsBeforeClaimingNewWork() {
+        when(jobs.recoverExpiredRunning(any(), eq(ReplayJobStatus.PENDING), eq(ReplayJobStatus.RUNNING))).thenReturn(1);
+        when(jobs.findByStatusOrderByCreatedAtAsc(eq(ReplayJobStatus.PENDING), any())).thenReturn(List.of());
+
+        service.runNext();
+
+        verify(jobs).recoverExpiredRunning(any(), eq(ReplayJobStatus.PENDING), eq(ReplayJobStatus.RUNNING));
+        assertThat(metrics.counter("webhook.replay.job.recovered").count()).isEqualTo(1.0);
     }
 
     private static ReplayJob job(long id, ReplayJobStatus status, boolean dryRun) {

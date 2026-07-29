@@ -21,6 +21,7 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 @Service
 public class ReplayJobService {
@@ -34,13 +35,35 @@ public class ReplayJobService {
     private final boolean approvalRequired;
     private final int maxPerSecond;
     private final int dryRunPreviewLimit;
+    private final int leaseSeconds;
+    private final String workerId;
 
+    /** Compatibility constructor for focused tests and embedded callers. */
+    public ReplayJobService(ReplayJobRepository jobs, DeliveryTaskRepository deliveries,
+                            DeliveryService deliveryService, AuditService audit,
+                            TransactionTemplate transactions, MeterRegistry metrics, ObjectMapper json,
+                            boolean approvalRequired, int maxPerSecond, int dryRunPreviewLimit) {
+        this(jobs, deliveries, deliveryService, audit, transactions, metrics, json, approvalRequired,
+                maxPerSecond, dryRunPreviewLimit, 30, "replay-" + UUID.randomUUID());
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
     public ReplayJobService(ReplayJobRepository jobs, DeliveryTaskRepository deliveries,
                             DeliveryService deliveryService, AuditService audit,
                             TransactionTemplate transactions, MeterRegistry metrics, ObjectMapper json,
                             @Value("${webhook.replay.approval-required:true}") boolean approvalRequired,
                             @Value("${webhook.replay.max-per-second:20}") int maxPerSecond,
-                            @Value("${webhook.replay.dry-run-preview-limit:50}") int dryRunPreviewLimit) {
+                            @Value("${webhook.replay.dry-run-preview-limit:50}") int dryRunPreviewLimit,
+                            @Value("${webhook.replay.lease-seconds:30}") int leaseSeconds) {
+        this(jobs, deliveries, deliveryService, audit, transactions, metrics, json, approvalRequired,
+                maxPerSecond, dryRunPreviewLimit, leaseSeconds, "replay-" + UUID.randomUUID());
+    }
+
+    private ReplayJobService(ReplayJobRepository jobs, DeliveryTaskRepository deliveries,
+                             DeliveryService deliveryService, AuditService audit,
+                             TransactionTemplate transactions, MeterRegistry metrics, ObjectMapper json,
+                             boolean approvalRequired, int maxPerSecond, int dryRunPreviewLimit,
+                             int leaseSeconds, String workerId) {
         this.jobs = jobs;
         this.deliveries = deliveries;
         this.deliveryService = deliveryService;
@@ -51,6 +74,8 @@ public class ReplayJobService {
         this.approvalRequired = approvalRequired;
         this.maxPerSecond = Math.max(1, maxPerSecond);
         this.dryRunPreviewLimit = Math.max(1, dryRunPreviewLimit);
+        this.leaseSeconds = Math.max(5, leaseSeconds);
+        this.workerId = workerId;
     }
 
     @Transactional
@@ -84,7 +109,11 @@ public class ReplayJobService {
         if (job.getStatus() != ReplayJobStatus.AWAITING_APPROVAL) {
             throw new IllegalArgumentException("Replay job is not awaiting approval");
         }
-        job.setApprovedBy(RequestContext.principal().appId());
+        String approver = RequestContext.principal().appId();
+        if (approver.equals(job.getRequestedBy())) {
+            throw new IllegalArgumentException("Replay job creator cannot approve their own job");
+        }
+        job.setApprovedBy(approver);
         job.setApprovedAt(Instant.now());
         job.setStatus(ReplayJobStatus.PENDING);
         audit.record("REPLAY_JOB_APPROVED", "REPLAY_JOB", String.valueOf(id), "SUCCESS", null);
@@ -110,25 +139,27 @@ public class ReplayJobService {
     }
 
     public void runNext() {
+        int recovered = jobs.recoverExpiredRunning(Instant.now(), ReplayJobStatus.PENDING, ReplayJobStatus.RUNNING);
+        if (recovered > 0) metrics.counter("webhook.replay.job.recovered").increment(recovered);
         List<ReplayJob> pending = jobs.findByStatusOrderByCreatedAtAsc(ReplayJobStatus.PENDING, PageRequest.of(0, 1));
         if (pending.isEmpty()) return;
         Long jobId = pending.get(0).getId();
         Instant startedAt = Instant.now();
+        Instant lockedUntil = startedAt.plusSeconds(leaseSeconds);
         Integer claimed = transactions.execute(status ->
-                jobs.claimPending(jobId, startedAt, ReplayJobStatus.RUNNING, ReplayJobStatus.PENDING));
+                jobs.claimPending(jobId, startedAt, lockedUntil, workerId,
+                        ReplayJobStatus.RUNNING, ReplayJobStatus.PENDING));
         if (claimed == null || claimed != 1) return;
         ReplayJob claimedJob = jobs.findById(jobId).orElse(null);
         if (claimedJob == null) return;
         try {
+            renewLease(jobId);
             if (claimedJob.isDryRun()) runDryRun(claimedJob);
             else runReplay(claimedJob);
+        } catch (ReplayLeaseLostException lost) {
+            metrics.counter("webhook.replay.job.lease_lost").increment();
         } catch (RuntimeException failure) {
-            transactions.executeWithoutResult(status -> jobs.findById(jobId).ifPresent(job -> {
-                job.setStatus(ReplayJobStatus.FAILED);
-                job.setLastError(truncate(failure.getMessage(), 1000));
-                job.setCompletedAt(Instant.now());
-                jobs.save(job);
-            }));
+            failOwned(jobId, failure);
             metrics.counter("webhook.replay.job.failed").increment();
         }
     }
@@ -138,13 +169,13 @@ public class ReplayJobService {
         List<DeliveryTask> candidates = findCandidates(job.getTenantId(), filters, job.getMaxDeliveries());
         String summary = buildDryRunSummary(candidates);
         transactions.executeWithoutResult(tx -> jobs.findById(job.getId()).ifPresent(stored -> {
+            if (!ownedByThisWorker(stored)) throw new ReplayLeaseLostException();
             stored.setProcessedCount(candidates.size());
             stored.setReplayedCount(0);
             stored.setSkippedCount(candidates.size());
             stored.setFailedCount(0);
             stored.setResultSummaryJson(summary);
-            stored.setStatus(ReplayJobStatus.COMPLETED);
-            stored.setCompletedAt(Instant.now());
+            complete(stored, ReplayJobStatus.COMPLETED);
             jobs.save(stored);
         }));
         metrics.counter("webhook.replay.job.completed", "status", ReplayJobStatus.COMPLETED.name()).increment();
@@ -158,7 +189,9 @@ public class ReplayJobService {
         int failed = 0;
         long intervalMs = Math.max(1L, 1000L / maxPerSecond);
         while (processed < initial.getMaxDeliveries()) {
+            renewLease(initial.getId());
             ReplayJob snapshot = jobs.findById(initial.getId()).orElseThrow();
+            if (!ownedByThisWorker(snapshot)) throw new ReplayLeaseLostException();
             if (snapshot.isCancellationRequested()) {
                 finish(initial.getId(), processed, replayed, skipped, failed, ReplayJobStatus.CANCELLED, null);
                 return;
@@ -167,6 +200,7 @@ public class ReplayJobService {
             List<DeliveryTask> batch = findCandidates(initial.getTenantId(), filters, batchSize);
             if (batch.isEmpty()) break;
             for (DeliveryTask task : batch) {
+                renewLease(initial.getId());
                 try {
                     deliveryService.retryNow(task.getId(), initial.getTenantId());
                     replayed++;
@@ -279,6 +313,7 @@ public class ReplayJobService {
 
     private void updateProgress(Long id, int processed, int replayed, int skipped, int failed) {
         transactions.executeWithoutResult(status -> jobs.findById(id).ifPresent(job -> {
+            if (!ownedByThisWorker(job)) throw new ReplayLeaseLostException();
             job.setProcessedCount(processed);
             job.setReplayedCount(replayed);
             job.setSkippedCount(skipped);
@@ -290,13 +325,13 @@ public class ReplayJobService {
     private void finish(Long id, int processed, int replayed, int skipped, int failed,
                         ReplayJobStatus status, String resultSummaryJson) {
         transactions.executeWithoutResult(tx -> jobs.findById(id).ifPresent(job -> {
+            if (!ownedByThisWorker(job)) throw new ReplayLeaseLostException();
             job.setProcessedCount(processed);
             job.setReplayedCount(replayed);
             job.setSkippedCount(skipped);
             job.setFailedCount(failed);
             if (resultSummaryJson != null) job.setResultSummaryJson(resultSummaryJson);
-            job.setStatus(status);
-            job.setCompletedAt(Instant.now());
+            complete(job, status);
             jobs.save(job);
         }));
         metrics.counter("webhook.replay.job.completed", "status", status.name()).increment();
@@ -307,10 +342,40 @@ public class ReplayJobService {
                 .orElseThrow(() -> new IllegalArgumentException("Replay job not found: " + id));
     }
 
+    private void renewLease(Long id) {
+        Instant now = Instant.now();
+        Integer updated = transactions.execute(status -> jobs.heartbeat(id, workerId, now,
+                now.plusSeconds(leaseSeconds), ReplayJobStatus.RUNNING));
+        if (updated == null || updated != 1) throw new ReplayLeaseLostException();
+    }
+
+    private void failOwned(Long id, RuntimeException failure) {
+        transactions.executeWithoutResult(status -> jobs.findById(id).ifPresent(job -> {
+            if (!ownedByThisWorker(job)) return;
+            job.setLastError(truncate(failure.getMessage(), 1000));
+            complete(job, ReplayJobStatus.FAILED);
+            jobs.save(job);
+        }));
+    }
+
+    private boolean ownedByThisWorker(ReplayJob job) {
+        return workerId.equals(job.getLockedBy()) && job.getStatus() == ReplayJobStatus.RUNNING;
+    }
+
+    private void complete(ReplayJob job, ReplayJobStatus status) {
+        job.setStatus(status);
+        job.setCompletedAt(Instant.now());
+        job.setLockedBy(null);
+        job.setLockedUntil(null);
+        job.setHeartbeatAt(null);
+    }
+
     private String truncate(String value, int max) {
         return value == null || value.length() <= max ? value : value.substring(0, max);
     }
 
     private record ReplayFilters(Long endpointId, String eventType, Instant failedAfter,
                                  Instant failedBefore, Integer httpStatus) { }
+
+    private static final class ReplayLeaseLostException extends RuntimeException { }
 }

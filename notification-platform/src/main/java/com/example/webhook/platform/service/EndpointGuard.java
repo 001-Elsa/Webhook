@@ -107,15 +107,17 @@ public class EndpointGuard {
             if (endpoint.getCircuitOpenUntil() != null && endpoint.getCircuitOpenUntil().isAfter(now)) {
                 return "CIRCUIT_OPEN";
             }
+            int transitioned = endpoints.transitionOpenToHalfOpen(endpoint.getId(), CircuitState.OPEN,
+                    CircuitState.HALF_OPEN, now);
             WebhookEndpoint fresh = endpoints.findById(endpoint.getId()).orElse(endpoint);
-            if (fresh.getCircuitState() == CircuitState.OPEN
-                    && (fresh.getCircuitOpenUntil() == null || !fresh.getCircuitOpenUntil().isAfter(Instant.now()))) {
-                fresh.setCircuitState(CircuitState.HALF_OPEN);
-                fresh.setHalfOpenProbes(0);
-                endpoints.save(fresh);
+            if (transitioned == 1) {
                 endpoint.setCircuitState(CircuitState.HALF_OPEN);
                 endpoint.setHalfOpenProbes(0);
                 metrics.counter("webhook.endpoint.circuit.state", "state", "HALF_OPEN").increment();
+                state = CircuitState.HALF_OPEN;
+            } else if (fresh.getCircuitState() == CircuitState.HALF_OPEN) {
+                endpoint.setCircuitState(CircuitState.HALF_OPEN);
+                endpoint.setHalfOpenProbes(fresh.getHalfOpenProbes());
                 state = CircuitState.HALF_OPEN;
             } else if (fresh.getCircuitState() == CircuitState.OPEN) {
                 return "CIRCUIT_OPEN";
@@ -132,11 +134,11 @@ public class EndpointGuard {
                 return fresh.getCircuitState() == CircuitState.OPEN ? "CIRCUIT_OPEN" : null;
             }
             int max = Math.max(1, fresh.getHalfOpenMaxProbes());
-            if (fresh.getHalfOpenProbes() >= max) return "CIRCUIT_OPEN";
-            fresh.setHalfOpenProbes(fresh.getHalfOpenProbes() + 1);
-            endpoints.save(fresh);
+            if (endpoints.acquireHalfOpenProbe(endpoint.getId(), CircuitState.HALF_OPEN, max) != 1) {
+                return "CIRCUIT_OPEN";
+            }
             endpoint.setCircuitState(CircuitState.HALF_OPEN);
-            endpoint.setHalfOpenProbes(fresh.getHalfOpenProbes());
+            endpoint.setHalfOpenProbes(Math.min(max, fresh.getHalfOpenProbes() + 1));
             return null;
         }
         return null;

@@ -79,9 +79,9 @@ jobs:
           tags: |
             eventrelay:${{ github.sha }}
             ${{ env.IMAGE }}:${{ github.sha }}
-      # Full image findings go to SARIF / Security. Do not fail the job on scanner
-      # CRITICAL hits in transitive app jars or Temurin base layers — those need
-      # dependency bumps tracked separately, not a hard CI block for this portfolio demo.
+      # Full image findings remain visible in SARIF. The precise application-library
+      # gate below blocks fixable CRITICAL findings without treating all base-image
+      # findings as a blanket release blocker.
       - name: Trivy vulnerability scan (SARIF)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -94,7 +94,10 @@ jobs:
       - uses: github/codeql-action/upload-sarif@v3
         if: always()
         with: { sarif_file: trivy-results.sarif }
-      - name: Trivy CRITICAL report (application libraries)
+      # A fixable CRITICAL vulnerability in an application dependency is a release
+      # blocker. Unfixed base-image findings remain visible in the SARIF report;
+      # any exception must be a reviewed, CVE-specific entry in .trivyignore.
+      - name: "Trivy gate: fixable CRITICAL application libraries"
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: eventrelay:${{ github.sha }}
@@ -102,7 +105,8 @@ jobs:
           severity: CRITICAL
           ignore-unfixed: true
           vuln-type: library
-          exit-code: "0"
+          trivyignores: .trivyignore
+          exit-code: "1"
       - name: Push immutable image
         if: github.event_name != 'pull_request'
         id: push

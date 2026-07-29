@@ -27,6 +27,13 @@ import com.example.webhook.platform.service.OutboxService;
 import org.springframework.transaction.support.TransactionTemplate;
 import java.time.Instant;
 import java.sql.DriverManager;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 @Testcontainers(disabledWithoutDocker = true)
 @SpringBootTest(properties = {"webhook.dispatcher.fixed-delay-ms=600000",
@@ -62,6 +69,7 @@ class InfrastructureIntegrationTest {
     @Autowired EventRecordRepository events;
     @Autowired DeliveryTaskRepository deliveries;
     @Autowired OutboxMessageRepository outbox;
+    @Autowired ReplayJobRepository replayJobs;
     @Autowired TransactionTemplate transactions;
     @Autowired OutboxService outboxService;
 
@@ -156,6 +164,67 @@ class InfrastructureIntegrationTest {
 
         assertThat(firstClaim).isEqualTo(1);
         assertThat(secondClaim).isZero();
+    }
+
+    @Test
+    void twentyConcurrentWorkersReceiveExactlyOneHalfOpenProbePermit() throws Exception {
+        WebhookEndpoint endpoint = new WebhookEndpoint();
+        endpoint.setTenantId("half-open-tenant");
+        endpoint.setName("half-open-" + System.nanoTime());
+        endpoint.setUrl("https://93.184.216.34/webhook");
+        endpoint.setEncryptedSecret("v1:test-value-not-read");
+        endpoint.setEventTypes("*");
+        endpoint.setCircuitState(CircuitState.HALF_OPEN);
+        endpoint.setHalfOpenMaxProbes(1);
+        WebhookEndpoint savedEndpoint = endpoints.saveAndFlush(endpoint);
+
+        ExecutorService workers = Executors.newFixedThreadPool(20);
+        CountDownLatch ready = new CountDownLatch(20);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            List<Future<Integer>> attempts = new ArrayList<>();
+            for (int i = 0; i < 20; i++) {
+                Long endpointId = savedEndpoint.getId();
+                attempts.add(workers.submit(() -> {
+                    ready.countDown();
+                    assertThat(start.await(10, TimeUnit.SECONDS)).isTrue();
+                    return endpoints.acquireHalfOpenProbe(endpointId, CircuitState.HALF_OPEN, 1);
+                }));
+            }
+            assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            int granted = 0;
+            for (Future<Integer> attempt : attempts) granted += attempt.get(30, TimeUnit.SECONDS);
+
+            assertThat(granted).isEqualTo(1);
+            assertThat(endpoints.findById(savedEndpoint.getId()).orElseThrow().getHalfOpenProbes()).isEqualTo(1);
+        } finally {
+            workers.shutdownNow();
+        }
+    }
+
+    @Test
+    void expiredReplayJobIsRecoveredAndCanBeClaimedByAReplacementScheduler() {
+        ReplayJob job = new ReplayJob();
+        job.setTenantId("replay-recovery-tenant");
+        job.setRequestedBy("requester-a");
+        job.setStatus(ReplayJobStatus.RUNNING);
+        job.setDryRun(true);
+        job.setMaxDeliveries(10);
+        job.setLockedBy("scheduler-crashed");
+        job.setLockedUntil(Instant.now().minusSeconds(1));
+        job.setHeartbeatAt(Instant.now().minusSeconds(31));
+        job = replayJobs.saveAndFlush(job);
+
+        Instant now = Instant.now();
+        assertThat(replayJobs.recoverExpiredRunning(now, ReplayJobStatus.PENDING, ReplayJobStatus.RUNNING)).isEqualTo(1);
+        assertThat(replayJobs.claimPending(job.getId(), now, now.plusSeconds(30), "scheduler-replacement",
+                ReplayJobStatus.RUNNING, ReplayJobStatus.PENDING)).isEqualTo(1);
+
+        ReplayJob recovered = replayJobs.findById(job.getId()).orElseThrow();
+        assertThat(recovered.getStatus()).isEqualTo(ReplayJobStatus.RUNNING);
+        assertThat(recovered.getLockedBy()).isEqualTo("scheduler-replacement");
+        assertThat(recovered.getHeartbeatAt()).isNotNull();
     }
 
     @Test

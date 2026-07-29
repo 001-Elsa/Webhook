@@ -14,21 +14,26 @@ public class OutboxService {
     public OutboxService(OutboxMessageRepository repository) { this.repository = repository; }
 
     public OutboxMessage add(Long deliveryId, OutboxMessageType type, int attemptNo) {
-        return add(deliveryId, type, attemptNo, Instant.now(), "IMMEDIATE");
+        return add(deliveryId, type, attemptNo, Instant.now(), "IMMEDIATE", null);
+    }
+
+    public OutboxMessage add(Long deliveryId, OutboxMessageType type, int attemptNo, String traceParent) {
+        return add(deliveryId, type, attemptNo, Instant.now(), "IMMEDIATE", traceParent);
     }
 
     public OutboxMessage addScheduled(Long deliveryId, OutboxMessageType type, int attemptNo, Instant scheduledAt) {
-        return add(deliveryId, type, attemptNo, scheduledAt, "DATABASE_SCHEDULER");
+        return add(deliveryId, type, attemptNo, scheduledAt, "DATABASE_SCHEDULER", null);
     }
 
     private OutboxMessage add(Long deliveryId, OutboxMessageType type, int attemptNo,
-                              Instant scheduledAt, String source) {
+                              Instant scheduledAt, String source, String traceParent) {
         OutboxMessage message = new OutboxMessage();
         message.setDeliveryId(deliveryId);
         message.setMessageType(type);
         message.setAttemptNo(attemptNo);
         message.setNextAttemptAt(scheduledAt);
         message.setScheduledSource(source);
+        message.setTraceParent(traceParent);
         message.setLogicalPartition((short) Math.floorMod(deliveryId, 16));
         return repository.save(message);
     }

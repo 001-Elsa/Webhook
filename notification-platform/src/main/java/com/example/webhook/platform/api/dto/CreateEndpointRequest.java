@@ -12,7 +12,7 @@ public record CreateEndpointRequest(
         @Size(max = 500) String eventTypes,
         Boolean active,
         @Min(1) @Max(20) Integer maxAttempts,
-        @Min(1) @Max(600) Integer rateLimitPerMinute,
+        @Min(1) @Max(100000) Integer rateLimitPerMinute,
         @Size(max = 500) String filterExpression
 ) {
     public CreateEndpointRequest(String name, String url, String secret, String eventTypes, Boolean active,

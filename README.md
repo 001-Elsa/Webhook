@@ -129,3 +129,13 @@ P95 220.44 ms、P99 300.48 ms、成功率 100%。历史 200 TPS 实验只达到
 未发布到 Maven/PyPI/npm）；`cli/` 支持查询 Delivery、创建 ReplayJob 和
 只读诊断。事件支持 `schemaVersion`，Endpoint 支持受限的确定性订阅过滤
 DSL（字符串/数字/布尔与 `&&`），这不是 Schema Registry。
+
+## 安全门禁
+
+CI 保留 Gitleaks、CycloneDX SBOM、不可变镜像扫描、SARIF 上传和 Cosign 签名。
+Trivy 的应用依赖库扫描会使 **可修复的 CRITICAL** 漏洞直接阻断 CI。未修复问题和
+基础镜像问题仍会出现在 SARIF 中，但不会被笼统地豁免。任何临时例外都必须在
+[`.trivyignore`](.trivyignore) 中精确列出一个 CVE，并在对应 Pull Request 记录到期
+时间和审查理由。验收时可在分支中引入一个有已知可修复 CRITICAL 公告的依赖版本：
+`Trivy gate: fixable CRITICAL application libraries` 必须失败；升级或移除该依赖后
+必须恢复为绿色。

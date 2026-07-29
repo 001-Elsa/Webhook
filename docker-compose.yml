@@ -48,6 +48,8 @@ services:
     ports: ["8082:8082"]
     environment:
       RECEIVER_WEBHOOK_SECRET: ${WEBHOOK_DEMO_RECEIVER_SECRET:-}
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+      OTEL_SERVICE_NAME: eventrelay-receiver
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8082/ >/dev/null || exit 1"]
       interval: 10s

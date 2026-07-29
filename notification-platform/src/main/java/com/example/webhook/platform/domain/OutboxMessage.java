@@ -27,6 +27,8 @@ public class OutboxMessage {
     private String lastError;
     @Column(nullable = false, length = 30)
     private String scheduledSource = "IMMEDIATE";
+    @Column(length = 55)
+    private String traceParent;
     @Column(nullable = false)
     private short logicalPartition;
     @Column(nullable = false, updatable = false)
@@ -56,6 +58,8 @@ public class OutboxMessage {
     public void setLastError(String lastError) { this.lastError = lastError; }
     public String getScheduledSource() { return scheduledSource; }
     public void setScheduledSource(String scheduledSource) { this.scheduledSource = scheduledSource; }
+    public String getTraceParent() { return traceParent; }
+    public void setTraceParent(String traceParent) { this.traceParent = traceParent; }
     public short getLogicalPartition() { return logicalPartition; }
     public void setLogicalPartition(short logicalPartition) { this.logicalPartition = logicalPartition; }
     public Instant getCreatedAt() { return createdAt; }

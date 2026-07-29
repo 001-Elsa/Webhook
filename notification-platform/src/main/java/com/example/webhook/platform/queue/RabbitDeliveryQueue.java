@@ -6,6 +6,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.AmqpException;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanContext;
+import io.opentelemetry.api.trace.TraceFlags;
+import io.opentelemetry.api.trace.TraceState;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
 import java.util.concurrent.TimeUnit;
 
 @Component
@@ -27,6 +33,15 @@ public class RabbitDeliveryQueue implements DeliveryQueue {
 
     @Override
     public void enqueue(Long deliveryId) {
+        enqueue(deliveryId, null);
+    }
+
+    @Override
+    public void enqueue(Long deliveryId, String traceParent) {
+        withTraceParent(traceParent, () -> sendDelivery(deliveryId));
+    }
+
+    private void sendDelivery(Long deliveryId) {
         CorrelationData correlation = correlation(deliveryId);
         rabbitTemplate.convertAndSend(RabbitTopology.DELIVERY_EXCHANGE, RabbitTopology.DELIVERY_KEY, deliveryId,
                 message -> { message.getMessageProperties().setMessageId("delivery-" + deliveryId); return message; },
@@ -43,6 +58,23 @@ public class RabbitDeliveryQueue implements DeliveryQueue {
 
     private CorrelationData correlation(Long deliveryId) {
         return new CorrelationData("delivery-" + deliveryId + "-" + java.util.UUID.randomUUID());
+    }
+
+    /**
+     * Outbox publication runs after the HTTP request has ended. Re-attach its
+     * persisted W3C parent so RabbitTemplate observation creates a publisher
+     * span in the original trace and propagates it to the consumer.
+     */
+    private void withTraceParent(String traceParent, Runnable operation) {
+        if (traceParent == null || !traceParent.matches("00-[0-9a-fA-F]{32}-[0-9a-fA-F]{16}-0[01]")) {
+            operation.run();
+            return;
+        }
+        String[] parts = traceParent.split("-");
+        SpanContext parent = SpanContext.createFromRemoteParent(parts[1], parts[2], TraceFlags.getSampled(), TraceState.getDefault());
+        try (Scope ignored = Context.root().with(Span.wrap(parent)).makeCurrent()) {
+            operation.run();
+        }
     }
 
     private void awaitConfirmed(CorrelationData correlation) {

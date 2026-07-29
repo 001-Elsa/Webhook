@@ -43,6 +43,6 @@ public class EventController {
                 RequestContext.principal().tenantId(), eventId)
                 .orElseThrow(() -> new IllegalArgumentException("Event not found: " + eventId));
         return Map.of("eventId", event.getEventId(), "status", event.getStatus(),
-                "createdAt", event.getCreatedAt());
+                "traceId", event.getTraceId(), "createdAt", event.getCreatedAt());
     }
 }

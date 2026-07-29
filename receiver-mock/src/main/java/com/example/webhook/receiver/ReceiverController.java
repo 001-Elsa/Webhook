@@ -21,6 +21,7 @@ import org.springframework.beans.factory.annotation.Value;
 public class ReceiverController {
     private final List<ReceivedWebhook> received = new ArrayList<>();
     private final AtomicInteger failNext = new AtomicInteger(1);
+    private final java.util.concurrent.atomic.AtomicLong responseDelayMs = new java.util.concurrent.atomic.AtomicLong();
     private final Set<String> processedDeliveries = ConcurrentHashMap.newKeySet();
     private final String secret;
 
@@ -56,6 +57,7 @@ public class ReceiverController {
                 received.remove(received.size() - 1);
             }
         }
+        delayResponse();
         return Map.of("received", true, "eventId", eventId, "deliveryId", deliveryId);
     }
 
@@ -71,12 +73,26 @@ public class ReceiverController {
         if (request.failNext() != null) {
             failNext.set(request.failNext());
         }
-        return Map.of("failNext", failNext.get(), "secretConfigured", true);
+        if (request.delayMs() != null) {
+            responseDelayMs.set(Math.max(0, Math.min(request.delayMs(), 30_000)));
+        }
+        return Map.of("failNext", failNext.get(), "delayMs", responseDelayMs.get(), "secretConfigured", true);
     }
 
     @GetMapping("/api/config")
     public Map<String, Object> config() {
-        return Map.of("failNext", failNext.get(), "secretConfigured", true);
+        return Map.of("failNext", failNext.get(), "delayMs", responseDelayMs.get(), "secretConfigured", true);
+    }
+
+    private void delayResponse() {
+        long delay = responseDelayMs.get();
+        if (delay == 0) return;
+        try {
+            Thread.sleep(delay);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Receiver response interrupted");
+        }
     }
 
     private boolean verify(String timestamp, String eventId, String payload, String signatureHeader) {
@@ -91,6 +107,6 @@ public class ReceiverController {
         }
     }
 
-    public record ReceiverConfig(Integer failNext) {
+    public record ReceiverConfig(Integer failNext, Long delayMs) {
     }
 }

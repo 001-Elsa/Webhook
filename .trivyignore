@@ -1,0 +1,5 @@
+# CVE-specific, reviewed temporary waivers only.
+#
+# A line must contain one exact vulnerability ID (for example CVE-2030-12345)
+# and must be accompanied by an expiry and rationale in the pull request that
+# introduced it. Do not add broad severity/package patterns here.
