@@ -60,19 +60,20 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build immutable image
+      # load and push cannot be enabled together in build-push-action.
+      - name: Build immutable image locally for scanning
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           build-args: MODULE=notification-platform
           load: true
-          push: ${{ github.event_name != 'pull_request' }}
+          push: false
           tags: |
             eventrelay:${{ github.sha }}
             ${{ env.IMAGE }}:${{ github.sha }}
       - name: Trivy vulnerability gate
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: eventrelay:${{ github.sha }}
           format: sarif
@@ -83,11 +84,18 @@ jobs:
       - uses: github/codeql-action/upload-sarif@v3
         if: always()
         with: { sarif_file: trivy-results.sarif }
+      - name: Push immutable image
+        if: github.event_name != 'pull_request'
+        id: push
+        run: |
+          docker push "${IMAGE}:${GITHUB_SHA}"
+          digest="$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE}:${GITHUB_SHA}" | cut -d@ -f2)"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
       - uses: sigstore/cosign-installer@v3
         if: github.event_name != 'pull_request'
       - name: Sign immutable image
         if: github.event_name != 'pull_request'
-        run: cosign sign --yes "${IMAGE}@${{ steps.build.outputs.digest }}"
+        run: cosign sign --yes "${IMAGE}@${{ steps.push.outputs.digest }}"
 
   smoke:
     needs: image
@@ -109,6 +117,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Deploy test environment
+        # Compose pulls in otel-collector/jaeger via depends_on of the four roles.
         run: docker compose up -d --build --wait mysql redis rabbitmq receiver-mock eventrelay-api eventrelay-publisher eventrelay-worker eventrelay-scheduler
       - name: Smoke test real end-to-end delivery
         run: |
@@ -124,10 +133,11 @@ jobs:
               -H 'X-App-Id: platform-admin' \
               -H 'X-Api-Key: ci-admin-key' \
               "http://localhost:8080/api/events/${event_id}/status")"
-            if echo "$body" | grep -q '"status":"SUCCEEDED"'; then exit 0; fi
+            # Event terminal success is COMPLETED (Delivery uses SUCCEEDED).
+            if echo "$body" | grep -q '"status":"COMPLETED"'; then exit 0; fi
             sleep 2
           done
-          echo "Event did not reach SUCCEEDED" >&2
+          echo "Event did not reach COMPLETED: ${body:-<empty>}" >&2
           exit 1
       - name: Collect failure evidence
         if: failure()
