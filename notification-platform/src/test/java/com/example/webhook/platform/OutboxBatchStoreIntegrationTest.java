@@ -40,7 +40,14 @@ import static org.assertj.core.api.Assertions.assertThat;
         "spring.rabbitmq.listener.simple.auto-startup=false",
         "eventrelay.roles.publisher=false",
         "eventrelay.roles.scheduler=false",
-        "eventrelay.roles.worker=false"
+        "eventrelay.roles.worker=false",
+        // Stabilise Hikari for short-lived CI containers — avoid stale
+        // connections that produce "No operations allowed after connection closed".
+        "spring.datasource.hikari.maximum-pool-size=4",
+        "spring.datasource.hikari.connection-timeout=30000",
+        "spring.datasource.hikari.max-lifetime=30000",
+        "spring.datasource.hikari.validation-timeout=5000",
+        "spring.datasource.hikari.idle-timeout=10000"
 })
 class OutboxBatchStoreIntegrationTest {
     @Container static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.4")
@@ -74,6 +81,9 @@ class OutboxBatchStoreIntegrationTest {
         for (int i = 0; i < 20; i++) {
             seedPendingOutbox("skip-locked-tenant", now.minusSeconds(i + 1));
         }
+        // Ensure all 20 seeded rows are visible before concurrent claiming,
+        // otherwise a slow CI runner can let one worker see an empty table.
+        waitForOutboxCount(20, 10);
 
         ExecutorService pool = Executors.newFixedThreadPool(2);
         CountDownLatch ready = new CountDownLatch(2);
@@ -89,8 +99,15 @@ class OutboxBatchStoreIntegrationTest {
             List<OutboxMessage> batchA = first.get(60, TimeUnit.SECONDS);
             List<OutboxMessage> batchB = second.get(60, TimeUnit.SECONDS);
 
-            assertThat(batchA).isNotEmpty();
-            assertThat(batchB).isNotEmpty();
+            // Diagnostic output so the CI log immediately shows which batch was
+            // empty when the test flakes — no need to download a ZIP artifact.
+            System.out.println("batchA.size=" + batchA.size()
+                    + " ids=" + batchA.stream().map(OutboxMessage::getId).collect(Collectors.toList()));
+            System.out.println("batchB.size=" + batchB.size()
+                    + " ids=" + batchB.stream().map(OutboxMessage::getId).collect(Collectors.toList()));
+
+            assertThat(batchA).as("worker-a should receive some messages").isNotEmpty();
+            assertThat(batchB).as("worker-b should receive some messages").isNotEmpty();
             Set<Long> idsA = batchA.stream().map(OutboxMessage::getId).collect(Collectors.toSet());
             Set<Long> idsB = batchB.stream().map(OutboxMessage::getId).collect(Collectors.toSet());
             Set<Long> overlap = new HashSet<>(idsA);
@@ -143,5 +160,23 @@ class OutboxBatchStoreIntegrationTest {
         message.setNextAttemptAt(nextAttemptAt);
         message.setLogicalPartition((short) (delivery.getId() % 16));
         outbox.save(message);
+    }
+
+    /**
+     * Polls {@link #outbox} until the expected number of rows is visible, or the
+     * timeout expires.  Eliminates the race between the seed loop (implicit
+     * per-save transactions that commit asynchronously on a loaded CI runner) and
+     * the concurrent {@code claimBatch} workers that expect all rows to be present.
+     */
+    private void waitForOutboxCount(long expected, long timeoutSeconds) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(timeoutSeconds);
+        while (System.currentTimeMillis() < deadline) {
+            if (outbox.count() >= expected) {
+                return;
+            }
+            Thread.sleep(100);
+        }
+        throw new IllegalStateException("Timed out waiting for outbox count >= " + expected
+                + " (actual=" + outbox.count() + ")");
     }
 }
