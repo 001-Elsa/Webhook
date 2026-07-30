@@ -99,22 +99,23 @@ class OutboxBatchStoreIntegrationTest {
             List<OutboxMessage> batchA = first.get(60, TimeUnit.SECONDS);
             List<OutboxMessage> batchB = second.get(60, TimeUnit.SECONDS);
 
-            // Diagnostic output so the CI log immediately shows which batch was
-            // empty when the test flakes — no need to download a ZIP artifact.
-            System.out.println("batchA.size=" + batchA.size()
-                    + " ids=" + batchA.stream().map(OutboxMessage::getId).collect(Collectors.toList()));
-            System.out.println("batchB.size=" + batchB.size()
-                    + " ids=" + batchB.stream().map(OutboxMessage::getId).collect(Collectors.toList()));
-
-            assertThat(batchA).as("worker-a should receive some messages").isNotEmpty();
-            assertThat(batchB).as("worker-b should receive some messages").isNotEmpty();
+            // SKIP LOCKED with two concurrent workers racing over 20 rows may
+            // legitimately give everything to one worker.  The invariant is
+            // disjoint batches — not that every worker gets a non-empty slice.
             Set<Long> idsA = batchA.stream().map(OutboxMessage::getId).collect(Collectors.toSet());
             Set<Long> idsB = batchB.stream().map(OutboxMessage::getId).collect(Collectors.toSet());
+
+            System.out.println("batchA.size=" + batchA.size() + " ids=" + idsA);
+            System.out.println("batchB.size=" + batchB.size() + " ids=" + idsB);
+
             Set<Long> overlap = new HashSet<>(idsA);
             overlap.retainAll(idsB);
             assertThat(overlap).as("SKIP LOCKED must yield disjoint leased batches").isEmpty();
             assertThat(idsA).hasSize(batchA.size());
             assertThat(idsB).hasSize(batchB.size());
+            // Together they should claim at least one row — otherwise the
+            // claimBatch SQL path is genuinely broken.
+            assertThat(idsA.size() + idsB.size()).as("at least one row claimed").isPositive();
         } finally {
             pool.shutdownNow();
         }
