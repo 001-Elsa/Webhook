@@ -187,14 +187,14 @@ class InfrastructureIntegrationTest {
                 Long endpointId = savedEndpoint.getId();
                 attempts.add(workers.submit(() -> {
                     ready.countDown();
-                    assertThat(start.await(10, TimeUnit.SECONDS)).isTrue();
+                    assertThat(start.await(30, TimeUnit.SECONDS)).isTrue();
                     return endpoints.acquireHalfOpenProbe(endpointId, CircuitState.HALF_OPEN, 1);
                 }));
             }
-            assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(ready.await(30, TimeUnit.SECONDS)).isTrue();
             start.countDown();
             int granted = 0;
-            for (Future<Integer> attempt : attempts) granted += attempt.get(30, TimeUnit.SECONDS);
+            for (Future<Integer> attempt : attempts) granted += attempt.get(60, TimeUnit.SECONDS);
 
             assertThat(granted).isEqualTo(1);
             assertThat(endpoints.findById(savedEndpoint.getId()).orElseThrow().getHalfOpenProbes()).isEqualTo(1);

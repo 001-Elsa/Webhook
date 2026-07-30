@@ -111,14 +111,18 @@ class DeliveryServiceReliabilityTest {
             when(secretCipher.decrypt(any())).thenReturn("secret");
             when(rateLimiter.tryAcquire(any(), anyInt())).thenReturn(true);
 
+            Instant before = Instant.now();
             DeliveryService.Outcome outcome = service().processDelivery(31L);
+            Instant after = Instant.now();
 
             assertThat(outcome).isEqualTo(DeliveryService.Outcome.RETRY);
             assertThat(task.getStatus()).isEqualTo(DeliveryStatus.RETRYING);
             assertThat(task.getAttemptCount()).isEqualTo(1);
             assertThat(task.getLastStatusCode()).isEqualTo(500);
-            assertThat(task.getNextAttemptAt()).isAfter(Instant.now().plusSeconds(3));
-            assertThat(task.getNextAttemptAt()).isBefore(Instant.now().plusSeconds(8));
+            // nextAttemptAt is calculated as now+base(5s); capture bounds
+            // around the call so CI slowness does not shift Instant.now().
+            assertThat(task.getNextAttemptAt()).isAfter(before.plusSeconds(4));
+            assertThat(task.getNextAttemptAt()).isBefore(after.plusSeconds(6));
             verify(attemptRepository).save(any());
             verify(outboxService, never()).add(eq(31L),
                     eq(com.example.webhook.platform.domain.OutboxMessageType.RETRY), eq(1));
@@ -182,11 +186,15 @@ class DeliveryServiceReliabilityTest {
             when(secretCipher.decrypt(any())).thenReturn("secret");
             when(rateLimiter.tryAcquire(any(), anyInt())).thenReturn(true);
 
+            Instant before = Instant.now();
             DeliveryService.Outcome outcome = service().processDelivery(46L);
+            Instant after = Instant.now();
 
             assertThat(outcome).isEqualTo(DeliveryService.Outcome.RETRY);
-            assertThat(task.getNextAttemptAt()).isAfter(Instant.now().plusSeconds(22));
-            assertThat(task.getNextAttemptAt()).isBefore(Instant.now().plusSeconds(28));
+            // nextAttemptAt is driven by Retry-After:25; capture bounds
+            // around the call so CI slowness does not shift Instant.now().
+            assertThat(task.getNextAttemptAt()).isAfter(before.plusSeconds(24));
+            assertThat(task.getNextAttemptAt()).isBefore(after.plusSeconds(26));
         } finally {
             server.stop(0);
         }

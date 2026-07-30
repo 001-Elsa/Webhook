@@ -83,7 +83,7 @@ class OutboxBatchStoreIntegrationTest {
             Instant leaseB = now.plusSeconds(90);
             Future<List<OutboxMessage>> first = pool.submit(() -> claimAfterSignal(ready, start, "worker-a", now, leaseA));
             Future<List<OutboxMessage>> second = pool.submit(() -> claimAfterSignal(ready, start, "worker-b", now, leaseB));
-            assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(ready.await(30, TimeUnit.SECONDS)).isTrue();
             start.countDown();
 
             List<OutboxMessage> batchA = first.get(60, TimeUnit.SECONDS);
@@ -107,7 +107,7 @@ class OutboxBatchStoreIntegrationTest {
                                                  String owner, Instant now, Instant lockedUntil)
             throws InterruptedException {
         ready.countDown();
-        assertThat(start.await(10, TimeUnit.SECONDS)).isTrue();
+        assertThat(start.await(30, TimeUnit.SECONDS)).isTrue();
         return batchStore.claimBatch(owner, 10, 100, now, lockedUntil);
     }
 

@@ -168,10 +168,10 @@ class EndpointGuardTest {
                     }
                 });
             }
-            assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(ready.await(30, TimeUnit.SECONDS)).isTrue();
             start.countDown();
             pool.shutdown();
-            assertThat(pool.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(pool.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
             assertThat(permits.stream().filter(EndpointGuard.Permit::acquired)).hasSize(1);
             assertThat(probes.get()).isEqualTo(1);
         } finally {

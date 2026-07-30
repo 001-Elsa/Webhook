@@ -22,7 +22,25 @@ jobs:
           java-version: "17"
           cache: maven
       - name: Unit and Testcontainers integration tests
-        run: mvn -B verify
+        run: >
+          mvn -B
+          -DtrimStackTrace=false
+          verify
+      - name: Print failed test reports
+        if: failure()
+        shell: bash
+        run: |
+          echo "========== FAILED TEST REPORTS =========="
+          find . \
+            -path "*/target/surefire-reports/*.txt" \
+            -type f \
+            -exec sh -c '
+              if grep -Eq "FAILURE|ERROR|Failures: [1-9]|Errors: [1-9]" "$1"; then
+                echo
+                echo "===== $1 ====="
+                cat "$1"
+              fi
+            ' _ {} \;
       - name: Upload surefire reports on failure
         if: failure()
         uses: actions/upload-artifact@v4

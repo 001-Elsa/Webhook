@@ -17,9 +17,10 @@
     <properties>
         <java.version>17</java.version>
         <spring-boot.version>3.3.5</spring-boot.version>
-        <!-- Override Tomcat to 10.1.42 (Spring Boot 3.3.13 baseline) to fix
-             CVE-2024-50379 / CVE-2024-56337 (CRITICAL TOCTOU RCE).
-             Remove when Spring Boot itself is upgraded. -->
+        <!-- Override embedded Tomcat to latest 10.1.x (2026-07-14) to fix
+             CRITICAL CVEs: CVE-2026-55276, CVE-2026-59083, CVE-2026-59084 etc.
+             Spring Boot 3.3.5 ships 10.1.31 which Trivy flags as vulnerable.
+             Remove this override when upgrading Spring Boot itself. -->
         <tomcat.version>10.1.57</tomcat.version>
         <testcontainers.version>1.21.4</testcontainers.version>
         <!-- Container restart drills require a Docker environment whose dynamic port mapping survives restarts. -->
