@@ -44,6 +44,26 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
+            <!-- Explicitly override embedded Tomcat to 10.1.57 (2026-07-14) because
+                 the Maven property override does not reliably propagate through the
+                 BOM import.  Spring Boot 3.3.5 ships 10.1.31 which Trivy flags for
+                 multiple CRITICAL CVEs (CVE-2026-55276, CVE-2026-59083, etc.).
+                 Remove these entries when upgrading Spring Boot itself. -->
+            <dependency>
+                <groupId>org.apache.tomcat.embed</groupId>
+                <artifactId>tomcat-embed-core</artifactId>
+                <version>10.1.57</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.tomcat.embed</groupId>
+                <artifactId>tomcat-embed-el</artifactId>
+                <version>10.1.57</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.tomcat.embed</groupId>
+                <artifactId>tomcat-embed-websocket</artifactId>
+                <version>10.1.57</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 
